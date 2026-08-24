@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 import argparse
+import os
 import sys
 import threading
 import time
@@ -51,10 +52,12 @@ def main():
         sys.exit(1)
 
     # 内存注入实际监听端口（不落盘）：供 SSRF 自环防护比对"本服务自身端口"
+    # v8.14：同时写环境变量，uvicorn --reload 子进程重新导入 config 时可回退读取
     try:
         from app.config import init_config, set_runtime_port
         init_config()
         set_runtime_port(args.port)
+        os.environ["DEVERAI_RUNTIME_PORT"] = str(args.port)
     except Exception as e:
         print(f"[web_main] 配置初始化失败: {e}", file=sys.stderr)
         sys.exit(1)

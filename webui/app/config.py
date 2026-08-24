@@ -2,6 +2,7 @@
 
 一切 Agent 逻辑（对话/工具调用/规划/资产/模式）都在浏览器端执行。
 """
+import os
 import secrets
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -72,6 +73,9 @@ def _coerce_field(cfg: ServerConfig, k: str, v) -> None:
 
 # 实际监听端口（内存注入，不落盘）：由启动入口 set_runtime_port() 设置，
 # 供 SSRF 自环防护判断"本服务自身端口"，避免默认端口与启动端口不一致导致防护失效。
+# v8.14：启动入口同时写 DEVERAI_RUNTIME_PORT 环境变量——uvicorn --reload 的子进程
+# 会重新导入本模块，仅靠进程内存注入会丢失，导致自环防护比对到错误端口。
+_RUNTIME_PORT_ENV = "DEVERAI_RUNTIME_PORT"
 _runtime_port: int | None = None
 
 
@@ -79,6 +83,10 @@ def set_runtime_port(port: int) -> None:
     global _runtime_port
     if isinstance(port, int) and port > 0:
         _runtime_port = port
+        try:
+            os.environ[_RUNTIME_PORT_ENV] = str(port)
+        except Exception:
+            pass
 
 
 def reset_runtime_port() -> None:
@@ -88,6 +96,14 @@ def reset_runtime_port() -> None:
 
 
 def self_port() -> int:
+    global _runtime_port
+    if _runtime_port is None:
+        try:
+            envp = int(os.environ.get(_RUNTIME_PORT_ENV, "") or 0)
+            if envp > 0:
+                _runtime_port = envp
+        except Exception:
+            pass
     if _runtime_port is not None:
         return _runtime_port
     return get_config().port

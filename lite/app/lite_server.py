@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth
-from .config import APP_DIR, DATA_DIR, get_config, init_config
+from .config import DATA_DIR, get_config, init_config
 from .security import is_dangerous_cmd
 from .storage import save_text
 
@@ -276,11 +276,21 @@ def _ip_of(host: str):
         return None
 
 
+def _canon_ip(a):
+    """IPv4-mapped IPv6（::ffff:127.0.0.1）显式解包为 IPv4 再判定。
+
+    部分旧 Python 版本 is_loopback/is_private 不展开 ipv4_mapped，会漏判。
+    """
+    if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped:
+        return a.ipv4_mapped
+    return a
+
+
 def _is_loopback(host: str, infos=None) -> bool:
     host = (host or "").lower().strip()
     if host in _FORBIDDEN or host.endswith(".localhost"):
         return True
-    a = _ip_of(host)
+    a = _canon_ip(_ip_of(host))
     if a is not None:
         return a.is_loopback
     if infos is None:
@@ -290,11 +300,11 @@ def _is_loopback(host: str, infos=None) -> bool:
             return False
     # 混合解析安全：任一解析结果命中环回即视为环回（any 而非 all）——
     # all 语义下「公网 + 环回」双解析可绕过拦截，而下游 HTTP 客户端可能连到环回那一条
-    return bool(infos) and any(ipaddress.ip_address(i[4][0]).is_loopback for i in infos)
+    return bool(infos) and any(_canon_ip(ipaddress.ip_address(i[4][0])).is_loopback for i in infos)
 
 
 def _is_private(host: str, infos=None) -> bool:
-    a = _ip_of(host)
+    a = _canon_ip(_ip_of(host))
     if a is not None:
         return (a.is_private or a.is_link_local or a.is_unspecified
                 or not a.is_global) and not a.is_loopback
@@ -304,11 +314,11 @@ def _is_private(host: str, infos=None) -> bool:
         except OSError:
             return False
     return bool(infos) and any(
-        (ipaddress.ip_address(i[4][0]).is_private
-         or ipaddress.ip_address(i[4][0]).is_link_local
-         or ipaddress.ip_address(i[4][0]).is_unspecified
-         or not ipaddress.ip_address(i[4][0]).is_global)
-        and not ipaddress.ip_address(i[4][0]).is_loopback
+        (_canon_ip(ipaddress.ip_address(i[4][0])).is_private
+         or _canon_ip(ipaddress.ip_address(i[4][0])).is_link_local
+         or _canon_ip(ipaddress.ip_address(i[4][0])).is_unspecified
+         or not _canon_ip(ipaddress.ip_address(i[4][0])).is_global)
+        and not _canon_ip(ipaddress.ip_address(i[4][0])).is_loopback
         for i in infos
     )
 
@@ -560,28 +570,38 @@ async def fs_tree(path: str = "", user: dict = Depends(auth.current_user)):
     p = _resolve(path)
     if _is_read_protected(p, _workspace()):
         raise HTTPException(403, "该目录属于受保护数据，禁止列出")
-    if not p.is_dir():
-        raise HTTPException(404, "不是目录")
-    entries = []
-    try:
-        items = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
-    except PermissionError:
-        raise HTTPException(403, "无权限访问该目录")
-    except OSError:
-        raise HTTPException(500, "读取目录失败")
-    items = [it for it in items
-             if it.name not in _SKIP_DIRS and not _is_read_protected(it, _workspace())]
-    truncated = False
-    if len(items) > _MAX_TREE:
-        items = items[:_MAX_TREE]
-        truncated = True
-    for it in items:
+
+    def _scan() -> dict:
+        if not p.is_dir():
+            raise HTTPException(404, "不是目录")
+        entries = []
         try:
-            st = it.stat()
+            items = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except PermissionError:
+            raise HTTPException(403, "无权限访问该目录")
         except OSError:
-            st = None
-        entries.append({"name": it.name, "is_dir": it.is_dir(), "size": st.st_size if st else 0})
-    return {"ok": True, "children": entries, "truncated": truncated}
+            raise HTTPException(500, "读取目录失败")
+        root = _workspace()
+        items = [it for it in items
+                 if it.name not in _SKIP_DIRS and not _is_read_protected(it, root)]
+        truncated = False
+        if len(items) > _MAX_TREE:
+            items = items[:_MAX_TREE]
+            truncated = True
+        for it in items:
+            try:
+                st = it.stat()
+            except OSError:
+                st = None
+            try:
+                is_dir = it.is_dir()
+            except OSError:
+                is_dir = False
+            entries.append({"name": it.name, "is_dir": is_dir, "size": st.st_size if st else 0})
+        return {"ok": True, "children": entries, "truncated": truncated}
+
+    # v8.14：iterdir/stat 是同步磁盘 IO，移入线程池防阻塞事件循环（对齐 grep 先例）
+    return await asyncio.to_thread(_scan)
 
 
 @app.get("/api/bridge/fs/read")
@@ -590,22 +610,32 @@ async def fs_read(path: str = "", user: dict = Depends(auth.current_user)):
     # v8.13.1：读只受数据/密钥文件保护，源码目录允许 Agent 查看
     if _is_read_protected(p, _workspace()):
         raise HTTPException(403, "该文件属于受保护数据，禁止读取")
-    try:
-        if not p.is_file():
-            raise HTTPException(404, "文件不存在")
-        size = p.stat().st_size
-    except OSError:
-        raise HTTPException(404, "文件不存在或不可访问")  # v8.12：stat/is_file 异常保护
-    if size > 2 * 1024 * 1024:
-        raise HTTPException(413, "文件超过 2MB")
-    # 二进制检测（对齐 bridge.py P2-13）：含 NUL 字节明确 415，而非返回 U+FFFD 乱码
-    try:
-        if b"\x00" in p.read_bytes()[:8192]:
-            raise HTTPException(415, "二进制文件，不支持文本读取")
-        content = p.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        raise HTTPException(500, "读取文件失败")
-    return {"ok": True, "content": content, "lines": len(content.splitlines())}
+
+    def _read() -> dict:
+        try:
+            if not p.is_file():
+                raise HTTPException(404, "文件不存在")
+            size = p.stat().st_size
+        except OSError:
+            raise HTTPException(404, "文件不存在或不可访问")  # v8.12：stat/is_file 异常保护
+        if size > 2 * 1024 * 1024:
+            raise HTTPException(413, "文件超过 2MB")
+        # 二进制检测（对齐 bridge.py P2-13）：含 NUL 字节明确 415，而非返回 U+FFFD 乱码
+        # v8.14：只读前 8KB 探测 NUL，不再为取头部整读全文件
+        try:
+            with open(p, "rb") as f:
+                head = f.read(8192)
+            if b"\x00" in head:
+                raise HTTPException(415, "二进制文件，不支持文本读取")
+            content = p.read_text(encoding="utf-8", errors="replace")
+        except HTTPException:
+            raise
+        except OSError:
+            raise HTTPException(500, "读取文件失败")
+        return {"ok": True, "content": content, "lines": len(content.splitlines())}
+
+    # v8.14：同步磁盘 IO 移入线程池
+    return await asyncio.to_thread(_read)
 
 
 @app.post("/api/bridge/fs/write")
@@ -621,8 +651,13 @@ async def fs_write(body: dict, user: dict = Depends(auth.current_user)):
     content = str(body.get("content") or "")
     if len(content.encode("utf-8", errors="ignore")) > _MAX_WRITE:
         raise HTTPException(413, "文件内容超过 5MB 上限")
-    p.parent.mkdir(parents=True, exist_ok=True)
-    save_text(p, content)
+
+    def _write() -> None:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        save_text(p, content)
+
+    # v8.14：同步磁盘 IO 移入线程池
+    await asyncio.to_thread(_write)
     return {"ok": True}
 
 
@@ -735,6 +770,29 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
     except (TypeError, ValueError):
         timeout = 120
 
+    async def _kill_tree() -> None:
+        """v8.14：Windows 下 proc.kill() 只杀 shell 本体，孙进程（cmd /c start ...）残留；
+        改用 taskkill /T /F 杀整棵进程树，失败回退 proc.kill()。"""
+        if proc is None or proc.returncode is not None:
+            return
+        if os.name == "nt" and proc.pid:
+            try:
+                k = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+                try:
+                    await asyncio.wait_for(k.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                pass
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except ProcessLookupError:
+            pass
+
     async def _gen():
         proc = None
         try:
@@ -759,12 +817,12 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
                 yield f'data: {json.dumps({"line": text}, ensure_ascii=False)}\n\n'
-            if timed_out and proc.returncode is None:
-                proc.kill()
+            if timed_out:
+                await _kill_tree()
             try:
                 rc = await asyncio.wait_for(proc.wait(), timeout=15)
             except asyncio.TimeoutError:
-                proc.kill()
+                await _kill_tree()
                 try:
                     rc = await asyncio.wait_for(proc.wait(), timeout=10)
                 except asyncio.TimeoutError:
@@ -773,8 +831,7 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
             yield f'data: {json.dumps({"done": True, "rc": rc, "timed_out": timed_out}, ensure_ascii=False)}\n\n'
         except asyncio.CancelledError:
             # v8.13：客户端断开走取消语义——清理后重抛，不在取消路径中 yield
-            if proc and proc.returncode is None:
-                proc.kill()
+            await _kill_tree()
             try:
                 if proc:
                     await asyncio.wait_for(proc.wait(), timeout=10)
@@ -782,8 +839,7 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
                 pass
             raise
         except Exception:
-            if proc and proc.returncode is None:
-                proc.kill()
+            await _kill_tree()
             try:
                 if proc:
                     await asyncio.wait_for(proc.wait(), timeout=10)

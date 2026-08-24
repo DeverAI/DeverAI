@@ -283,7 +283,8 @@ function applyServerInfo(info) {
   const regBtn = $('#au-register');
   if (regBtn) {
     // 注册关闭时隐藏注册入口（对齐网页版 has_users/allow_register 语义）
-    regBtn.style.display = (info && info.allow_register === false) ? 'none' : '';
+    // v8.14：info 拉取失败时保守隐藏——allow_register=false 的部署下不再让用户点了才知道 403
+    regBtn.style.display = (!info || info.allow_register === false) ? 'none' : '';
   }
   if (info && !info.has_users) {
     $('#au-err').textContent = '尚无账户：填写用户名密码后点「注册」';
@@ -437,6 +438,8 @@ $('#btn-logout').onclick = async () => {
 
 /* ---- 聊天 ---- */
 function wireUI() {
+  if (wireUI._wired) return;  // v8.14：幂等护栏，防重复调用叠加 document 级监听器
+  wireUI._wired = true;
   $('#send-btn').onclick = sendMessage;
   $('#btn-clear').onclick = () => {
     State.history = [];
