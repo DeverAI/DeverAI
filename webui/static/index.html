@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DeverAI</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github.min.css" />
+<link rel="stylesheet" id="hljs-dark" disabled href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css" />
+<link rel="stylesheet" href="/static/css/style.css?v=8.13.0" />
+</head>
+<body>
+
+<!-- ============ 登录页 ============ -->
+<div id="auth-view" class="hidden">
+  <div class="auth-card">
+    <div class="auth-logo">D</div>
+    <h1 class="auth-title">DeverAI</h1>
+    <p class="auth-sub">本地记忆即资产 · 复用优先于重建</p>
+    <p class="auth-tip">服务端只负责下发 UI 与验证身份，AI 助手（Agent）完全运行在你的浏览器里。</p>
+    <div class="auth-tabs" id="auth-tabs">
+      <button class="auth-tab active" data-mode="login">登录</button>
+      <button class="auth-tab" data-mode="register">用户名注册</button>
+      <button class="auth-tab" data-mode="email">邮箱注册</button>
+    </div>
+    <div class="auth-form" id="auth-form-user">
+      <input class="form-input" id="auth-user" placeholder="用户名 / 邮箱" autocomplete="username" />
+      <input class="form-input" id="auth-pass" type="password" placeholder="密码（至少 4 位）" autocomplete="current-password" />
+      <button class="btn primary auth-btn" id="auth-submit">进入 DeverAI</button>
+      <div class="auth-err" id="auth-err"></div>
+    </div>
+    <div class="auth-form hidden" id="auth-form-email">
+      <input class="form-input" id="auth-email" placeholder="邮箱地址" autocomplete="email" />
+      <div class="form-row" style="gap:8px">
+        <input class="form-input" id="auth-code" placeholder="验证码（6 位）" autocomplete="one-time-code" />
+        <button class="btn" id="auth-send-code" style="flex:0 0 auto">发送验证码</button>
+      </div>
+      <input class="form-input" id="auth-email-pass" type="password" placeholder="设置密码（至少 4 位）" autocomplete="new-password" />
+      <input class="form-input" id="auth-email-name" placeholder="用户名（可选，留空用邮箱前缀）" autocomplete="username" />
+      <button class="btn primary auth-btn" id="auth-email-submit">注册并进入</button>
+      <div class="auth-err" id="auth-email-err"></div>
+      <div class="form-hint" id="auth-email-hint">验证码将通过 SMTP SSL 发送至你的邮箱，10 分钟内有效。</div>
+    </div>
+    <div class="auth-foot">v2 · 浏览器端 Agent · API Key 仅存本机</div>
+  </div>
+</div>
+
+<!-- ============ 主界面：三栏工作台布局 ============ -->
+<div id="app" class="hidden">
+
+  <!-- 左侧导航 -->
+  <aside id="left-nav">
+    <div class="ln-header">
+      <button class="btn primary" id="btn-new-task"><span data-icon="plus" data-size="14"></span> New Task</button>
+    </div>
+
+    <div class="ln-scroll">
+      <section class="ln-section">
+        <div class="ln-title">Tasks</div>
+        <div id="task-list" class="ln-list">
+          <div class="ln-item active">
+            <span class="ln-dot"></span>
+            <span class="ln-label">当前会话</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="ln-section">
+        <div class="ln-title">Chats</div>
+        <div id="chat-list" class="ln-list">
+          <div class="ln-item">
+            <span class="ln-dot muted"></span>
+            <span class="ln-label">默认会话</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="ln-section">
+        <div class="ln-title">Better Harness <span class="ln-badge">new</span></div>
+        <div class="ln-list">
+          <div class="ln-item" id="nav-assets"><span data-icon="atom" data-size="14"></span> Assets</div>
+          <div class="ln-item" id="nav-experts"><span data-icon="bot" data-size="14"></span> Experts</div>
+        </div>
+      </section>
+
+      <section class="ln-section">
+        <div class="ln-title">Trace</div>
+        <div class="ln-list">
+          <div class="ln-item" id="nav-trace"><span data-icon="chart" data-size="14"></span> 工作轨迹</div>
+        </div>
+      </section>
+
+      <section class="ln-section">
+        <div class="ln-title">Dev</div>
+        <div class="ln-list">
+          <div class="ln-item" id="nav-devtools"><span data-icon="terminal" data-size="14"></span> API 控制台</div>
+        </div>
+      </section>
+
+      <section class="ln-section">
+        <div class="ln-title">Knowledge</div>
+        <div class="ln-list">
+          <div class="ln-item" id="ln-doc-design"><span data-icon="memo" data-size="14"></span> Design.md</div>
+          <div class="ln-item" id="ln-doc-techniques"><span data-icon="memo" data-size="14"></span> Techniques.md</div>
+        </div>
+      </section>
+    </div>
+
+    <div class="ln-bottom">
+      <button class="ln-link" id="ln-schedule"><span data-icon="calendar" data-size="14"></span> Schedule</button>
+      <button class="ln-link" id="ln-marketplace"><span data-icon="chart" data-size="14"></span> Marketplace</button>
+      <button class="ln-link hidden" id="btn-voice-assist" title="语音助手 小龙（点击说话）"><span data-icon="voice" data-size="14"></span> 小龙</button>
+      <div class="ln-user">
+        <span class="ln-avatar">D</span>
+        <span id="ln-username">未登录</span>
+        <button class="icon-btn" id="btn-logout" title="退出登录" data-icon="close" data-size="14"></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 中间主工作区 -->
+  <main id="task-main">
+    <header id="main-header">
+      <div class="mh-left">
+        <div class="mh-dropdown" id="editor-dropdown">
+          <span>Editor</span>
+          <span data-icon="chevron-down" data-size="12"></span>
+        </div>
+        <div id="tabbar"></div>
+      </div>
+      <div class="mh-right">
+        <button class="icon-btn" id="btn-theme" title="切换主题（自动/浅色/深色）" aria-label="切换主题" data-icon="contrast" data-size="14"></button>
+        <span class="mh-status" id="conn-dot" title="服务端连接状态"></span>
+        <span class="mh-pill" id="sb-model">模型未配置</span>
+        <span class="mh-pill" id="sb-ws" title="工作区"><span data-icon="folder" data-size="12"></span> <span id="ws-name">未授权</span></span>
+      </div>
+    </header>
+
+    <div id="main-body">
+      <!-- Hero 欢迎区 -->
+      <div id="hero">
+        <div class="hero-logo">D</div>
+        <h1 class="hero-title">Hands-off workspace</h1>
+        <p class="hero-sub">Start in <span id="ws-name-hero">Dor...</span> · Agent 将自主规划与执行</p>
+      </div>
+
+      <!-- 聊天消息 -->
+      <div id="chat-messages"></div>
+
+      <!-- v8.10 工作轨迹视图（手动标记 / 区间查询 / 操作筛选 / 详情预览） -->
+      <div id="trace-view" class="hidden">
+        <div class="trace-header">
+          <div class="trace-title">工作轨迹</div>
+          <div id="trace-range-stat" class="trace-range-stat hidden"></div>
+        </div>
+        <canvas id="trace-timeline" class="trace-timeline" height="110"></canvas>
+        <div class="trace-controls">
+          <div class="trace-ops-wrap">
+            <button class="btn trace-ops-btn" id="trace-ops">操作</button>
+            <div id="trace-ops-menu" class="trace-ops-menu hidden">
+              <label class="trace-ops-item"><input type="checkbox" data-role="system" /> SYSTEM</label>
+              <label class="trace-ops-item"><input type="checkbox" data-role="context" /> CONTEXT</label>
+              <label class="trace-ops-item"><input type="checkbox" data-role="user" /> USER</label>
+              <label class="trace-ops-item"><input type="checkbox" data-role="assistant" /> ASSISTANT</label>
+              <label class="trace-ops-item"><input type="checkbox" data-role="tool" /> TOOL</label>
+              <div class="trace-ops-sep"></div>
+              <button class="btn flatbtn" id="trace-ops-clear">清除筛选</button>
+            </div>
+          </div>
+          <input type="text" id="trace-search" class="form-input trace-search" placeholder="关键词（空格分隔 = AND）" />
+          <button class="btn trace-case-btn" id="trace-case" aria-pressed="false">Aa</button>
+          <button class="btn flatbtn" id="trace-add-marker" title="在最新事件处加标记点">+标记</button>
+          <button class="btn" id="trace-clear">清空</button>
+        </div>
+        <div id="trace-flow" class="trace-flow"></div>
+      </div>
+
+      <!-- v8.11 轨迹详情预览 modal（可拖动 + 置顶悬浮 + 元素选择引用） -->
+      <div id="trace-modal" class="trace-modal hidden">
+        <div class="trace-modal-mask"></div>
+        <div class="trace-modal-card" id="trace-modal-card">
+          <div class="trace-modal-head" id="trace-modal-head">
+            <span class="trace-modal-role trace-badge">SYSTEM</span>
+            <div class="trace-modal-summary"></div>
+            <button class="btn flatbtn trace-modal-pin" id="trace-modal-pin" title="置顶悬浮（置顶后点击遮罩不关闭）">置顶</button>
+            <button class="btn trace-modal-close" id="trace-modal-close">关闭</button>
+          </div>
+          <div class="trace-modal-toolbar">
+            <button class="btn flatbtn" id="trace-modal-quote-sel">引用选区到对话</button>
+            <button class="btn flatbtn" id="trace-modal-quote-all">引用全部</button>
+            <span class="trace-modal-spacer"></span>
+            <button class="btn flatbtn" id="trace-modal-zoom-out">缩小</button>
+            <button class="btn flatbtn" id="trace-modal-zoom-reset">100%</button>
+            <button class="btn flatbtn" id="trace-modal-zoom-in">放大</button>
+            <span class="trace-modal-zoom">100%</span>
+          </div>
+          <div class="trace-modal-body" id="trace-modal-body"></div>
+        </div>
+      </div>
+
+      <!-- v8.9 API 控制台：请求记录 + 复制为 curl -->
+      <div id="devtools-view" class="hidden">
+        <div class="trace-header">
+          <div class="trace-title">API 控制台（按 F12 同样可查看网络请求；此处可直接复制 curl）</div>
+          <div class="trace-actions">
+            <button class="btn" id="devtools-clear">清空</button>
+          </div>
+        </div>
+        <div id="devtools-list" class="devtools-list"></div>
+      </div>
+    </div>
+
+    <!-- 输入区 -->
+    <div id="input-area">
+      <div id="chat-suggest" class="chat-suggest">
+        <button class="chip" data-s="帮我创建项目结构">项目结构</button>
+        <button class="chip" data-s="读取当前文件并解释">解释文件</button>
+        <button class="chip" data-s="执行命令查看环境">运行命令</button>
+        <button class="chip" data-s="用 AOE 并行规划完成任务">AOE 规划</button>
+      </div>
+
+      <div class="input-card">
+        <textarea id="chat-input" rows="1" placeholder="Plan and build, @ for context..."></textarea>
+        <div class="input-foot">
+          <div class="input-left">
+            <button class="icon-btn" id="btn-attach" title="引用文件" data-icon="plus" data-size="14"></button>
+            <div class="select-wrap">
+              <span data-icon="bot" data-size="12"></span>
+              <select id="mode-select">
+                <option value="chat">Chat</option>
+                <option value="builder" selected>Agent</option>
+                <option value="experts">Experts</option>
+              </select>
+            </div>
+            <div class="select-wrap">
+              <span data-icon="atom" data-size="12"></span>
+              <select id="model-select">
+                <option value="">Qwen3.8-Max</option>
+              </select>
+            </div>
+          </div>
+          <div class="input-right">
+            <button class="icon-btn danger hidden" id="btn-chat-stop" title="停止" data-icon="close" data-size="14"></button>
+            <button class="icon-btn" id="btn-chat-clear" title="清空会话" aria-label="清空会话" data-icon="tag" data-size="14"></button>
+            <button id="btn-send" class="send-btn"><span data-icon="send" data-size="14"></span> Send</button>
+          </div>
+        </div>
+      </div>
+      <div id="chat-hint">Agent 运行在浏览器 · 可调用：读写文件 · 编辑 · 搜索 · 命令 · 子Agent · AOE</div>
+    </div>
+  </main>
+
+  <!-- 右侧面板 -->
+  <aside id="right-panel">
+    <header id="right-header">
+      <div class="rh-tabs">
+        <button class="rh-tab active" data-tab="summary">Summary</button>
+        <button class="rh-tab" data-tab="terminal">Terminal</button>
+        <button class="rh-tab" data-tab="files">Files</button>
+      </div>
+      <div class="rh-actions">
+        <button class="icon-btn" id="btn-account" title="账户与项目" data-icon="user" data-size="14"></button>
+        <button class="icon-btn" id="btn-settings" title="设置" data-icon="cog" data-size="14"></button>
+      </div>
+    </header>
+
+    <div id="right-body">
+      <!-- Summary -->
+      <div class="right-tab active" id="tab-summary">
+        <details class="fold" open>
+          <summary><span data-icon="chart" data-size="14"></span> Progress</summary>
+          <div class="fold-body">
+            <div id="summary-progress">
+              <div class="empty-state">Progress will appear here when tasks/builds are generated.</div>
+            </div>
+          </div>
+        </details>
+        <details class="fold">
+          <summary><span data-icon="atom" data-size="14"></span> Artifacts</summary>
+          <div class="fold-body">
+            <div id="summary-artifacts">
+              <div class="empty-state">No artifacts yet.</div>
+            </div>
+          </div>
+        </details>
+        <details class="fold">
+          <summary><span data-icon="link" data-size="14"></span> References</summary>
+          <div class="fold-body">
+            <div id="summary-references">
+              <div class="empty-state">No references yet.</div>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- Terminal -->
+      <div class="right-tab hidden" id="tab-terminal">
+        <div class="panel-head">
+          <span class="panel-title">终端</span>
+          <div class="panel-actions">
+            <button class="icon-btn" id="btn-clear-terminal" title="清空" data-icon="close" data-size="14"></button>
+          </div>
+        </div>
+        <div id="terminal-output"></div>
+        <div id="terminal-input-row">
+          <span class="t-prompt">❯</span>
+          <input id="terminal-input" placeholder="输入命令，回车执行" spellcheck="false" />
+        </div>
+      </div>
+
+      <!-- Files -->
+      <div class="right-tab hidden" id="tab-files">
+        <div class="panel-head">
+          <span class="panel-title">资源管理器</span>
+          <div class="panel-actions">
+            <button class="icon-btn" id="btn-new-file" title="新建文件" data-icon="plus" data-size="14"></button>
+            <button class="icon-btn" id="btn-new-folder" title="新建文件夹" data-icon="folder" data-size="14"></button>
+            <button class="icon-btn" id="btn-refresh-tree" title="刷新" data-icon="refresh" data-size="14"></button>
+          </div>
+        </div>
+        <div class="ws-bar" id="ws-bar" title="授权/切换工作区"><span data-icon="folder" data-size="14"></span> <span id="ws-name-right">未授权</span></div>
+        <div id="file-tree" class="file-tree"></div>
+        <div id="editor-host" class="hidden">
+          <div id="editor"></div>
+          <div id="editor-fallback" class="hidden"><textarea id="fallback-editor" spellcheck="false"></textarea></div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- 右键菜单 -->
+<div id="ctx-menu" class="hidden"></div>
+
+<!-- 语音助手「小龙」浮动面板 -->
+<div id="voice-panel" class="voice-panel hidden">
+  <div class="voice-header">
+    <div id="voice-mascot" class="voice-mascot"></div>
+    <div class="voice-title-text">小龙</div>
+    <button class="icon-btn voice-close" id="voice-close" title="关闭" data-icon="close" data-size="14"></button>
+  </div>
+  <div class="voice-status" id="voice-status">点击麦克风开始说话</div>
+  <div class="voice-transcript" id="voice-transcript"></div>
+  <div class="voice-actions">
+    <button class="voice-mic-btn" id="voice-mic-btn" title="点击说话">
+      <span data-icon="voice" data-size="20"></span>
+    </button>
+    <button class="voice-stop-btn hidden" id="voice-stop-btn" title="停止">
+      <span data-icon="close" data-size="16"></span>
+    </button>
+  </div>
+  <div class="voice-reply hidden" id="voice-reply"></div>
+  <div class="voice-mode-row">
+    <label>模式：</label>
+    <select id="voice-mode-select" class="form-input" style="flex:1">
+      <option value="feedback">反馈模式（直接回答）</option>
+      <option value="agent">Agent 模式（执行任务）</option>
+    </select>
+  </div>
+</div>
+
+<!-- 模态 -->
+<div id="modal-root" class="hidden">
+  <div id="modal"></div>
+</div>
+
+<!-- 肝完睡觉 全屏倒计时 -->
+<div id="sleep-overlay" class="hidden">
+  <div class="sleep-card">
+    <div class="sleep-title"><span data-icon="moon"></span> 肝完睡觉模式</div>
+    <div class="sleep-goal" id="sleep-goal-text"></div>
+    <div class="sleep-time" id="sleep-time">05:00</div>
+    <div class="sleep-desc" id="sleep-desc">任务已完成，5 分钟后将关机/休眠。若无操作将自动执行。</div>
+    <div class="sleep-actions">
+      <button class="btn" id="sleep-cancel">我还在，取消</button>
+      <button class="btn danger" id="sleep-now">立即执行</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-root"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.5/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
+<script>window.MONACO_URL = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs';</script>
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+<script src="/static/js/core.js?v=8.13.0"></script>
+<script src="/static/js/icons.js?v=8.13.0"></script>
+<script src="/static/js/fs.js?v=8.13.0"></script>
+<script src="/static/js/editor.js?v=8.13.0"></script>
+<script src="/static/js/tree.js?v=8.13.0"></script>
+<script src="/static/js/tools.js?v=8.13.0"></script>
+<script src="/static/js/agent.js?v=8.13.0"></script>
+<script src="/static/js/chat.js?v=8.13.0"></script>
+<script src="/static/js/panels.js?v=8.13.0"></script>
+<script src="/static/js/trace.js?v=8.13.0"></script>
+<script src="/static/js/devtools.js?v=8.13.0"></script>
+<script src="/static/js/voice-pet.js?v=2.0.0"></script>
+<script src="/static/js/voice.js?v=2.0.0"></script>
+<script src="/static/js/main.js?v=8.13.0"></script>
+</body>
+</html>

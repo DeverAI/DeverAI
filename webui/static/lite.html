@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeverAI Lite</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#1a1a2e;--bg2:#16213e;--bg3:#0f3460;--fg:#e0e0e0;--fg2:#a0a0b0;--accent:#e94560;--ok:#4ecca3;--err:#e94560;--border:#2a2a4a;--radius:6px;--font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--mono:"Cascadia Code","Fira Code",Consolas,monospace}
+body{font-family:var(--font);background:var(--bg);color:var(--fg);height:100vh;overflow:hidden;font-size:14px}
+.hidden{display:none!important}
+/* ---- 登录 ---- */
+#auth{display:flex;align-items:center;justify-content:center;height:100vh}
+.auth-card{background:var(--bg2);padding:32px;border-radius:12px;width:320px;text-align:center}
+.auth-card h1{font-size:22px;margin-bottom:4px;color:var(--accent)}
+.auth-card p{color:var(--fg2);font-size:12px;margin-bottom:20px}
+.auth-card input{width:100%;padding:10px 12px;margin:6px 0;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--fg);font-size:14px}
+.auth-card button{width:100%;padding:10px;margin-top:8px;border:none;border-radius:var(--radius);background:var(--accent);color:#fff;font-size:14px;cursor:pointer;transition:opacity .2s}
+.auth-card button:hover{opacity:.85}
+.auth-card .err{color:var(--err);font-size:12px;margin-top:6px;min-height:16px}
+/* ---- 主布局 ---- */
+#app{display:grid;grid-template-columns:220px 1fr 380px;grid-template-rows:1fr 28px;height:100vh;gap:0}
+#sidebar{background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+#sidebar-head{padding:8px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+#sidebar-head span{font-size:12px;color:var(--fg2);font-weight:600}
+#sidebar-head button{background:none;border:none;color:var(--fg2);cursor:pointer;font-size:14px;padding:2px 6px;border-radius:3px}
+#sidebar-head button:hover{background:var(--border)}
+#tree{flex:1;overflow-y:auto;padding:4px 0}
+.tree-item{padding:3px 10px;cursor:pointer;white-space:nowrap;font-size:13px;display:flex;align-items:center;gap:4px}
+.tree-item:hover{background:var(--border)}
+.tree-item.active{background:var(--bg3)}
+.tree-item .ico{width:14px;text-align:center;flex-shrink:0}
+#editor-area{display:flex;flex-direction:column;overflow:hidden}
+#tabbar{height:30px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 6px;gap:2px}
+.tab{padding:4px 12px;font-size:12px;border-radius:4px 4px 0 0;cursor:pointer;color:var(--fg2);border:1px solid transparent}
+.tab.active{background:var(--bg);color:var(--fg);border-color:var(--border)}
+#editor{flex:1;background:var(--bg);border:none;outline:none;padding:12px;font-family:var(--mono);font-size:13px;color:var(--fg);resize:none;line-height:1.6;white-space:pre;overflow:auto}
+#editor::placeholder{color:var(--fg2)}
+#welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--fg2)}
+#welcome .logo{font-size:48px;color:var(--accent);margin-bottom:8px}
+#welcome h2{font-size:18px;margin-bottom:4px}
+#welcome p{font-size:13px}
+/* ---- 聊天 ---- */
+#chat{background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+#chat-head{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+#chat-head .title{font-size:14px;font-weight:600}
+#chat-head .sub{font-size:11px;color:var(--fg2)}
+#chat-head button{background:none;border:none;color:var(--fg2);cursor:pointer;font-size:13px;padding:2px 6px}
+#messages{flex:1;overflow-y:auto;padding:8px 12px}
+.msg{margin-bottom:10px;max-width:100%}
+.msg .role{font-size:11px;color:var(--fg2);margin-bottom:2px}
+.msg .bubble{padding:8px 10px;border-radius:var(--radius);font-size:13px;word-wrap:break-word;white-space:pre-wrap}
+.msg.user .bubble{background:var(--bg3);color:var(--fg)}
+.msg.assistant .bubble{background:var(--border);color:var(--fg)}
+.msg.tool .bubble{background:transparent;border:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--fg2);max-height:200px;overflow-y:auto}
+.msg.error .bubble{color:var(--err)}
+#chat-input-area{border-top:1px solid var(--border);padding:8px}
+#chat-input{width:100%;height:70px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--fg);padding:8px;font-size:13px;resize:none;outline:none}
+#chat-input:focus{border-color:var(--accent)}
+#chat-bottom{display:flex;justify-content:space-between;align-items:center;margin-top:4px}
+#chat-bottom .hint{font-size:11px;color:var(--fg2)}
+#send-btn{padding:5px 16px;border:none;border-radius:var(--radius);background:var(--accent);color:#fff;font-size:13px;cursor:pointer}
+#send-btn:disabled{opacity:.4;cursor:not-allowed}
+#send-btn.stop{background:var(--err)}
+/* ---- 状态栏 ---- */
+#statusbar{grid-column:1/4;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 10px;gap:12px;font-size:11px;color:var(--fg2)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.dot.off{background:var(--err)}
+/* ---- 通用 ---- */
+.toast{position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:var(--bg3);color:var(--fg);padding:8px 20px;border-radius:var(--radius);font-size:13px;z-index:999;animation:fade .3s}
+.toast.err{background:var(--err)}
+.toast.ok{background:var(--ok);color:#000}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.thinking{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="auth">
+  <div class="auth-card">
+    <h1>DeverAI Lite</h1>
+    <p>超轻量网页远控</p>
+    <input id="au-user" placeholder="用户名" autocomplete="username">
+    <input id="au-pass" type="password" placeholder="密码" autocomplete="current-password">
+    <button id="au-login">登录</button>
+    <button id="au-register" style="background:var(--bg3);margin-top:6px">注册</button>
+    <div class="err" id="au-err"></div>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="app" class="hidden">
+  <div id="sidebar">
+    <div id="sidebar-head">
+      <span id="ws-name">未授权</span>
+      <button id="btn-pick-ws" title="授权工作区">[..]</button>
+    </div>
+    <div id="tree"></div>
+  </div>
+  <div id="editor-area">
+    <div id="tabbar"></div>
+    <textarea id="editor" class="hidden" spellcheck="false" placeholder="选择文件编辑..."></textarea>
+    <div id="welcome">
+      <div class="logo">D</div>
+      <h2>DeverAI Lite</h2>
+      <p>极简远控 · 浏览器端 Agent</p>
+    </div>
+  </div>
+  <div id="chat">
+    <div id="chat-head">
+      <div>
+        <div class="title">AI 助手</div>
+        <div class="sub" id="chat-sub">就绪</div>
+      </div>
+      <button id="btn-clear">清空</button>
+    </div>
+    <div id="messages"></div>
+    <div id="chat-input-area">
+      <textarea id="chat-input" placeholder="输入消息... (Ctrl+Enter 发送)"></textarea>
+      <div id="chat-bottom">
+        <span class="hint" id="chat-hint">Agent 运行在浏览器</span>
+        <button id="send-btn">发送</button>
+      </div>
+    </div>
+  </div>
+  <div id="statusbar">
+    <span class="dot" id="dot"></span>
+    <span id="sb-model">未配置</span>
+    <span id="sb-ws"></span>
+    <span style="flex:1"></span>
+    <button id="btn-settings" style="background:none;border:none;color:var(--fg2);cursor:pointer;font-size:12px">设置</button>
+    <button id="btn-logout" style="background:none;border:none;color:var(--fg2);cursor:pointer;font-size:12px">退出</button>
+  </div>
+</div>
+
+<!-- 设置弹窗 -->
+<div id="settings-modal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100">
+  <div style="background:var(--bg2);border-radius:12px;padding:24px;width:380px;max-height:80vh;overflow-y:auto">
+    <h3 style="margin-bottom:16px;font-size:16px">设置</h3>
+    <label style="font-size:12px;color:var(--fg2)">API Base URL</label>
+    <input id="set-base" style="width:100%;padding:8px;margin:4px 0 12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)" placeholder="https://api.openai.com/v1">
+    <label style="font-size:12px;color:var(--fg2)">API Key</label>
+    <input id="set-key" type="password" style="width:100%;padding:8px;margin:4px 0 12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)" placeholder="sk-...">
+    <label style="font-size:12px;color:var(--fg2)">模型</label>
+    <input id="set-model" style="width:100%;padding:8px;margin:4px 0 12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)" placeholder="gpt-4o-mini">
+    <label style="font-size:12px;color:var(--fg2)">命令桥工作区（手动输入路径授权，或用侧栏 [..] 弹窗选择）</label>
+    <div style="display:flex;gap:8px;margin:4px 0 12px">
+      <input id="set-ws" style="flex:1;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)" placeholder="C:\path\to\workspace">
+      <button id="set-ws-auth" style="padding:8px 14px;border:none;border-radius:4px;background:var(--bg3);color:var(--fg);cursor:pointer">授权</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button id="set-save" style="flex:1;padding:8px;border:none;border-radius:4px;background:var(--accent);color:#fff;cursor:pointer">保存</button>
+      <button id="set-close" style="flex:1;padding:8px;border:none;border-radius:4px;background:var(--bg3);color:var(--fg);cursor:pointer">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-root"></div>
+
+<script>
+/* ============ DeverAI Lite — 零依赖单文件前端 ============
+ * 极简 Agent：对话 + 文件读写 + 命令执行。
+ * 无 Monaco/hljs/marked/DOMPurify 等 CDN 依赖。
+ * 内存安全：AbortController 清理、事件监听移除、DOM 节点回收。
+ */
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => Math.random().toString(36).slice(2,10);
+
+const State = {
+  user: null,
+  history: [],
+  busy: false,
+  abortCtrl: null,
+  currentFile: null,
+  ws: { authorized: false, name: '' },
+  cfg: { base_url:'', api_key:'', model:'' },
+  serverInfo: null,
+};
+
+/* ---- 配置 ---- */
+const CFG_KEY = 'deverai.lite.cfg';
+function loadCfg() {
+  try { State.cfg = { ...State.cfg, ...JSON.parse(localStorage.getItem(CFG_KEY)||'{}') }; } catch(e){}
+}
+function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(State.cfg)); } catch(e){} }
+
+/* ---- API ---- */
+async function api(path, opts={}) {
+  const init = { method:opts.method||'GET', headers:{}, credentials:'same-origin' };
+  if (opts.body !== undefined) { init.headers['Content-Type']='application/json'; init.body=JSON.stringify(opts.body); }
+  if (opts.signal) init.signal = opts.signal;
+  const r = await fetch(path, init);
+  let d = null; try { d = await r.json(); } catch(e){}
+  if (!r.ok) throw new Error((d&&(d.detail||d.message))||('HTTP '+r.status));
+  return d || {};
+}
+
+function toast(msg, type='info') {
+  const el = document.createElement('div');
+  el.className = 'toast'+(type==='err'?' err':type==='ok'?' ok':'');
+  el.textContent = msg;
+  $('#toast-root').appendChild(el);
+  setTimeout(()=>{ el.style.opacity='0'; setTimeout(()=>el.remove(),300); }, 2500);
+}
+
+/* ---- SSE ---- */
+async function sseFetch(path, body, handlers, signal) {
+  const r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body:JSON.stringify(body), signal });
+  if (!r.ok) {
+    // v8.13：保留后端 detail（危险命令 403 需据此二次确认）
+    let detail = 'HTTP '+r.status;
+    try {
+      const d = await r.json();
+      if (d && (d.detail || d.message)) detail = String(d.detail || d.message);
+    } catch(e) {}
+    const err = new Error(detail);
+    err.status = r.status;
+    throw err;
+  }
+  if (!r.body) throw new Error('无流');
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let curEvent = '';
+  try {
+    for(;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream:true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx+1);
+        if (!line) { curEvent = ''; continue; }
+        if (line.startsWith('event:')) { curEvent = line.slice(6).trim(); continue; }
+        if (line.startsWith('data:')) {
+          const raw = line.slice(5).trim();
+          let obj; try { obj = JSON.parse(raw); } catch(e) { obj = { raw }; }
+          if (curEvent === 'error') { if (handlers.onError) handlers.onError(new Error('上游错误: '+((obj&&obj.message)||(obj&&obj.body)||raw))); }
+          else if (handlers.onData) handlers.onData(obj);
+        }
+      }
+    }
+    if (buf.trim()) {
+      // v8.13：无结尾换行的残行同样分发（core.js 已处理，此处对齐）
+      const line = buf.trim();
+      if (line.startsWith('event:')) { curEvent = line.slice(6).trim(); }
+      else if (line.startsWith('data:')) {
+        const raw = line.slice(5).trim();
+        let obj; try { obj = JSON.parse(raw); } catch(e) { obj = { raw }; }
+        if (curEvent === 'error') { if (handlers.onError) handlers.onError(new Error('上游错误: '+((obj&&obj.message)||(obj&&obj.body)||raw))); }
+        else if (handlers.onData) handlers.onData(obj);
+      }
+    }
+    if (handlers.onDone) handlers.onDone();
+  } catch(e) {
+    if (e.name === 'AbortError') { if (handlers.onAbort) handlers.onAbort(); }
+    else if (handlers.onError) handlers.onError(e);
+    else throw e;
+  } finally {
+    // v8.5.x 审查修复：释放 reader，避免 Abort/异常时流未关闭导致内存泄漏
+    try { reader.cancel(); } catch(e) {}
+  }
+}
+
+/* ---- 鉴权 ---- */
+async function boot() {
+  loadCfg();
+  // v8.12：读取服务器信息（注册开关/账号状态），驱动注册按钮显示与首次使用提示
+  try {
+    const info = await api('/api/server/info');
+    State.serverInfo = info;
+    applyServerInfo(info);
+  } catch(e) { State.serverInfo = null; }
+  try { const me = await api('/api/auth/me'); State.user = me.username; enterApp(); }
+  catch(e) { showAuth(); }
+}
+
+function applyServerInfo(info) {
+  const regBtn = $('#au-register');
+  if (regBtn) {
+    // 注册关闭时隐藏注册入口（对齐网页版 has_users/allow_register 语义）
+    regBtn.style.display = (info && info.allow_register === false) ? 'none' : '';
+  }
+  if (info && !info.has_users) {
+    $('#au-err').textContent = '尚无账户：填写用户名密码后点「注册」';
+  }
+}
+
+function showAuth() {
+  $('#auth').style.display = 'flex';
+  $('#app').classList.add('hidden');
+}
+
+$('#au-login').onclick = async () => {
+  try {
+    const r = await api('/api/auth/login', { method:'POST', body:{ username:$('#au-user').value, password:$('#au-pass').value }});
+    State.user = r.username; enterApp();
+  } catch(e) { $('#au-err').textContent = e.message; }
+};
+$('#au-register').onclick = async () => {
+  try {
+    const r = await api('/api/auth/register', { method:'POST', body:{ username:$('#au-user').value, password:$('#au-pass').value }});
+    State.user = r.username; enterApp();
+  } catch(e) { $('#au-err').textContent = e.message; }
+};
+
+async function enterApp() {
+  $('#auth').style.display = 'none';
+  $('#app').classList.remove('hidden');
+  $('#sb-model').textContent = State.cfg.model || '未配置';
+  await refreshWs();
+  if (State.ws.authorized) loadTree('');
+  wireUI();
+  restoreHistory();
+}
+
+async function refreshWs() {
+  try {
+    const r = await api('/api/bridge/workspace');
+    State.ws = { authorized: !!r.authorized, name: r.workspace || '' };
+    $('#ws-name').textContent = State.ws.name || '未授权';
+    $('#sb-ws').textContent = State.ws.authorized ? State.ws.name : '';
+  } catch(e) { State.ws = { authorized:false, name:'' }; }
+}
+
+/* ---- 文件树 ---- */
+async function loadTree(path) {
+  if (!State.ws.authorized) return;
+  State.currentDir = path || '';
+  try {
+    const r = await api('/api/bridge/fs/tree?path='+encodeURIComponent(path||''));
+    renderTree(r.children||[], path||'');
+  } catch(e) { toast('加载目录失败: '+e.message, 'err'); }
+}
+
+function renderTree(items, parentPath) {
+  const container = $('#tree');
+  // v8.13：每次渲染当前目录（含 .. 返回上级），不再把子目录无限追加到同一列表
+  container.innerHTML = '';
+  if (parentPath) {
+    const up = document.createElement('div');
+    up.className = 'tree-item';
+    up.innerHTML = '<span class="ico">[D]</span><span>..</span>';
+    up.onclick = () => loadTree(parentPath.split('/').slice(0, -1).join('/'));
+    container.appendChild(up);
+  }
+  items.forEach(it => {
+    const el = document.createElement('div');
+    el.className = 'tree-item';
+    const p = parentPath ? parentPath+'/'+it.name : it.name;
+    el.innerHTML = '<span class="ico">'+(it.is_dir?'[D]':'[F]')+'</span><span>'+esc(it.name)+'</span>';
+    el.onclick = () => {
+      if (it.is_dir) {
+        loadTree(p);
+      } else {
+        openFile(p);
+        document.querySelectorAll('.tree-item').forEach(x=>x.classList.remove('active'));
+        el.classList.add('active');
+      }
+    };
+    container.appendChild(el);
+  });
+}
+
+/* ---- 文件编辑 ---- */
+async function openFile(path) {
+  try {
+    const r = await api('/api/bridge/fs/read?path='+encodeURIComponent(path));
+    $('#editor').value = r.content;
+    $('#editor').classList.remove('hidden');
+    $('#welcome').classList.add('hidden');
+    State.currentFile = path;
+    $('#tabbar').innerHTML = '<div class="tab active">'+esc(path.split('/').pop())+'</div>';
+  } catch(e) { toast('打开文件失败: '+e.message, 'err'); }
+}
+
+let _saveTimer = null;
+$('#editor').addEventListener('input', () => {
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    if (!State.currentFile) return;
+    api('/api/bridge/fs/write', { method:'POST', body:{ path:State.currentFile, content:$('#editor').value }})
+      .then(()=>toast('已保存','ok'))
+      .catch(e=>toast('保存失败: '+e.message,'err'));
+  }, 1000);
+});
+
+/* ---- 工作区授权 ---- */
+$('#btn-pick-ws').onclick = async () => {
+  try {
+    const r = await api('/api/bridge/pick');
+    if (r.ok) { await refreshWs(); loadTree(''); toast('已授权: '+r.workspace, 'ok'); }
+    else toast(r.message||'未选择');
+  } catch(e) { toast('授权失败: '+e.message, 'err'); }
+};
+
+// v8.12：手动输入路径授权（POST /api/bridge/workspace 端口接线）
+$('#set-ws-auth').onclick = async () => {
+  const path = $('#set-ws').value.trim();
+  if (!path) { toast('请输入工作区路径', 'err'); return; }
+  try {
+    await api('/api/bridge/workspace', { method:'POST', body:{ path } });
+    $('#set-ws').value = '';
+    await refreshWs();
+    if (State.ws.authorized) { loadTree(''); toast('已授权: '+State.ws.name, 'ok'); }
+    else toast('授权未生效', 'err');
+  } catch(e) { toast('授权失败: '+e.message, 'err'); }
+};
+
+/* ---- 设置 ---- */
+$('#btn-settings').onclick = () => {
+  $('#set-base').value = State.cfg.base_url;
+  $('#set-key').value = ''; // 安全：不回显 key
+  $('#set-model').value = State.cfg.model;
+  $('#settings-modal').classList.remove('hidden');
+};
+$('#set-close').onclick = () => $('#settings-modal').classList.add('hidden');
+$('#set-save').onclick = () => {
+  State.cfg.base_url = $('#set-base').value.trim();
+  const key = $('#set-key').value.trim();
+  if (key) State.cfg.api_key = key;
+  State.cfg.model = $('#set-model').value.trim();
+  saveCfg();
+  $('#sb-model').textContent = State.cfg.model || '未配置';
+  $('#settings-modal').classList.add('hidden');
+  toast('设置已保存', 'ok');
+};
+
+$('#btn-logout').onclick = async () => {
+  try { await api('/api/auth/logout', { method:'POST' }); } catch(e){}
+  location.reload();
+};
+
+/* ---- 聊天 ---- */
+function wireUI() {
+  $('#send-btn').onclick = sendMessage;
+  $('#btn-clear').onclick = () => {
+    State.history = [];
+    saveHistory();
+    $('#messages').innerHTML = '';
+  };
+  $('#chat-input').addEventListener('keydown', e => {
+    if (e.key==='Enter' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); sendMessage(); }
+  });
+  // Ctrl+S 保存
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='s') { e.preventDefault(); saveEditor(); }
+  });
+}
+
+function saveEditor() {
+  if (!State.currentFile) return;
+  api('/api/bridge/fs/write', { method:'POST', body:{ path:State.currentFile, content:$('#editor').value }})
+    .then(()=>toast('已保存','ok')).catch(e=>toast('保存失败','err'));
+}
+
+function addMsg(role, content) {
+  const div = document.createElement('div');
+  div.className = 'msg '+role;
+  const roleLabel = role==='user'?'你':role==='assistant'?'AI':role==='tool'?'工具':'系统';
+  div.innerHTML = '<div class="role">'+roleLabel+'</div><div class="bubble">'+esc(content)+'</div>';
+  $('#messages').appendChild(div);
+  $('#messages').scrollTop = $('#messages').scrollHeight;
+  return div;
+}
+
+function restoreHistory() {
+  try {
+    const raw = sessionStorage.getItem('lite.history');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      State.history = Array.isArray(parsed) ? parsed : [];
+    }
+  } catch(e) { State.history = []; }
+  (State.history || []).forEach(m => { if (m && m.role && m.content != null) addMsg(m.role, m.content); });
+}
+
+function saveHistory() {
+  try { sessionStorage.setItem('lite.history', JSON.stringify(State.history.slice(-50))); } catch(e){}
+}
+
+/* ---- Agent 核心 ---- */
+function buildSystemPrompt() {
+  return [
+    '你是 DeverAI Lite，一个极简的浏览器端 AI 编程助手。',
+    '你可以读写工作区文件、搜索代码、执行命令行。',
+    '所有文件路径都是相对路径，禁止使用绝对路径。',
+    '小修改用 edit_file（精确替换），新文件用 write_file。',
+    '修改前先 read_file 确认原文。遇到失败要分析原因、修正重试。',
+    '回复要简洁，不要复述全部代码。',
+  ].join('\n');
+}
+
+function getToolDefs() {
+  return [
+    { type:'function', function:{ name:'read_file', description:'读取文件内容', parameters:{ type:'object', properties:{ path:{type:'string'} }, required:['path'] }}},
+    { type:'function', function:{ name:'write_file', description:'写入文件（覆盖）', parameters:{ type:'object', properties:{ path:{type:'string'}, content:{type:'string'} }, required:['path','content'] }}},
+    { type:'function', function:{ name:'edit_file', description:'精确替换文件中的一段文本', parameters:{ type:'object', properties:{ path:{type:'string'}, old_string:{type:'string'}, new_string:{type:'string'} }, required:['path','old_string','new_string'] }}},
+    { type:'function', function:{ name:'list_dir', description:'列出目录内容', parameters:{ type:'object', properties:{ path:{type:'string'} }, required:[] }}},
+    { type:'function', function:{ name:'grep', description:'正则搜索文件内容', parameters:{ type:'object', properties:{ pattern:{type:'string'}, path:{type:'string'} }, required:['pattern'] }}},
+    { type:'function', function:{ name:'run_command', description:'在工作区执行命令行', parameters:{ type:'object', properties:{ command:{type:'string'}, timeout:{type:'integer'} }, required:['command'] }}},
+  ];
+}
+
+async function executeTool(name, args) {
+  try {
+    switch(name) {
+      case 'read_file': {
+        const r = await api('/api/bridge/fs/read?path='+encodeURIComponent(args.path));
+        return { ok:true, output:r.content };
+      }
+      case 'write_file': {
+        if (args.content == null) return { ok:false, output:'write_file 缺少 content 参数' };
+        await api('/api/bridge/fs/write', { method:'POST', body:{ path:args.path, content:args.content }});
+        return { ok:true, output:'已写入 '+args.path };
+      }
+      case 'edit_file': {
+        const r = await api('/api/bridge/fs/read?path='+encodeURIComponent(args.path));
+        const content = r.content||'';
+        const oldS = String(args.old_string||'');
+        if (!content.includes(oldS)) return { ok:false, output:'未找到要替换的文本' };
+        const newContent = content.replace(oldS, String(args.new_string||''));
+        await api('/api/bridge/fs/write', { method:'POST', body:{ path:args.path, content:newContent }});
+        return { ok:true, output:'已修改 '+args.path };
+      }
+      case 'list_dir': {
+        const r = await api('/api/bridge/fs/tree?path='+encodeURIComponent(args.path||''));
+        const lines = (r.children||[]).map(it => (it.is_dir?'[D] ':'[F] ')+it.name);
+        return { ok:true, output:lines.join('\n')||'(空目录)' };
+      }
+      case 'grep': {
+        const r = await api('/api/bridge/fs/grep?pattern='+encodeURIComponent(args.pattern)+'&path='+encodeURIComponent(args.path||''));
+        const lines = (r.matches||[]).map(m => m.file+':'+m.line+': '+m.text);
+        return { ok:true, output:'匹配 '+r.count+' 处:\n'+lines.join('\n') };
+      }
+      case 'run_command': {
+        // v8.11 检修：本地预判清单与后端 is_dangerous_cmd 同源；即使本地漏判，
+        // 后端 403「危险命令」时会二次确认后带 danger_ok 重试，不会被永久卡死。
+        const DANGER_RE = /\brm\s+-[a-z]*[rf]|\bdel\s+\/[sfqi]|\brmdir\s+\/s|\brd\s+\/s\b|\bformat\b|\bdiskpart\b|\bmkfs\b|\bdd\s+if=|:\(\)\{|\breg\s+delete\b|\bshutdown\b|\breboot\b|\bpowershell\s+-enc|Invoke-Expression|\btaskkill\b(?=[\s\S]*\s\/f(?=\s|$))(?=[\s\S]*\s\/(?:im|pid)\b)|>\s*\/dev\/|\bgit\s+push\s+[\s\S]*--force(?!-with-lease)|\bdrop\s+(table|database)|\btruncate\s+table|\bpython(?:3)?\s+-c\b|\bpy\s+-c\b|\bpowershell\s+(?:-[a-z]+\s+)*-(?:command|enc)\b|\bcmd(?:\.exe)?\s+\/[cq]\b|\bRemove-Item\b[\s\S]*-Recurse\b|\bshutil\.rmtree\b|\bos\.remove\b/i;
+        const lines = [];
+        let lastError = '';
+        const exec = async (dangerOk) => {
+          await sseFetch('/api/bridge/run_command', { command:args.command, timeout:args.timeout||120, danger_ok: dangerOk }, {
+            onError(e) { addMsg('error', '命令流错误: '+e.message); },
+            onData(obj) {
+              if (obj.error !== undefined && obj.error !== null) lastError = String(obj.error);
+              if (obj.line!==undefined) lines.push(obj.line);
+              if (obj.done && lines.length) addMsg('tool', '$ '+args.command+'\n'+lines.join('\n'));
+            }
+          }, State.abortCtrl ? State.abortCtrl.signal : undefined);
+        };
+        const dangerous = DANGER_RE.test(args.command||'');
+        if (dangerous) {
+          const msg = '[危险] 命令：' + args.command + '\n\n可能造成不可逆影响，确认执行？';
+          if (!confirm(msg)) return { ok:false, output:'已取消执行' };
+        }
+        try {
+          await exec(dangerous);
+        } catch (e) {
+          const em = String((e && e.message) || e);
+          const is403 = !!(e && (e.status === 403 || em.indexOf('403') !== -1));
+          if (!dangerous && is403 && em.indexOf('危险') !== -1) {
+            // 后端危险拦截：本地漏判时二次确认后重试放行
+            if (!confirm('[危险] 命令：' + args.command + '\n\n后端判定为危险命令，确认执行？')) {
+              return { ok:false, output:'已取消执行' };
+            }
+            lines.length = 0; lastError = '';
+            await exec(true);
+          } else if (!dangerous && is403) {
+            return { ok:false, output:'执行被拒绝: '+em };
+          } else {
+            addMsg('error', '命令执行失败: ' + em);
+            return { ok:false, output:'执行失败: '+em };
+          }
+        }
+        if (lastError && !lines.length) addMsg('error', '命令执行失败: '+lastError);
+        return { ok: !lastError, output: lastError ? '执行失败: '+lastError : lines.join('\n') };
+      }
+      default: return { ok:false, output:'未知工具: '+name };
+    }
+  } catch(e) { return { ok:false, output:String(e.message||e) }; }
+}
+
+async function sendMessage() {
+  if (State.busy) {
+    // v8.13：busy 时按钮即停止按钮，直接 abort，不再弹误导 toast
+    if (State.abortCtrl) { try { State.abortCtrl.abort(); } catch(e){} }
+    return;
+  }
+  const text = $('#chat-input').value.trim();
+  if (!text) return;
+  if (!State.cfg.api_key || !State.cfg.model) { toast('请先在设置中配置 API Key 和模型','err'); $('#btn-settings').click(); return; }
+
+  State.busy = true;
+  State.abortCtrl = new AbortController();
+  $('#send-btn').textContent = '停止';
+  $('#send-btn').classList.add('stop');
+  $('#chat-sub').textContent = '思考中...';
+
+  State.history.push({ role:'user', content:text });
+  saveHistory();
+  addMsg('user', text);
+  $('#chat-input').value = '';
+
+  const messages = [{ role:'system', content:buildSystemPrompt() }, ...State.history.map(m=>({role:m.role, content:m.content}))];
+
+  let bubbleEl = null;
+  let assistantContent = '';
+
+  try {
+    for (let round = 0; round < 15; round++) {
+      if (State.abortCtrl.signal.aborted) break;
+      let content = '';
+      const toolCalls = {};
+      let finishReason = '';
+
+      await sseFetch('/api/llm/chat', {
+        base_url: State.cfg.base_url, api_key: State.cfg.api_key, model: State.cfg.model,
+        messages, stream:true, tools: getToolDefs(),
+      }, {
+        onError(e) { addMsg('error', '上游错误: '+e.message); $('#chat-sub').textContent = '错误'; },
+        onData(obj) {
+          const choice = (obj.choices && obj.choices[0]) || {};
+          if (choice.finish_reason) finishReason = choice.finish_reason;
+          if (choice.delta) {
+            if (choice.delta.content) { content += choice.delta.content; assistantContent += choice.delta.content; if (!bubbleEl) bubbleEl = addMsg('assistant', assistantContent); else bubbleEl.querySelector('.bubble').textContent = assistantContent; }
+            if (choice.delta.tool_calls) {
+              choice.delta.tool_calls.forEach(tc => {
+                const i = tc.index!=null?tc.index:0;
+                if (!toolCalls[i]) toolCalls[i] = { id:tc.id||'', name:'', arguments:'' };
+                if (tc.id) toolCalls[i].id = tc.id;
+                if (tc.function) { if (tc.function.name) toolCalls[i].name += tc.function.name; if (tc.function.arguments) toolCalls[i].arguments += tc.function.arguments; }
+              });
+            }
+          }
+        }
+      }, State.abortCtrl.signal);
+
+      const tcArr = Object.values(toolCalls);
+      messages.push({ role:'assistant', content, tool_calls: tcArr.length?tcArr:undefined });
+
+      if (!tcArr.length) {
+        // 停止（AbortError）时不再写入空 assistant 消息
+        if (!State.abortCtrl.signal.aborted) {
+          State.history.push({ role:'assistant', content });
+          saveHistory();
+        }
+        break;
+      }
+
+      // 执行工具
+      for (const tc of tcArr) {
+        if (State.abortCtrl.signal.aborted) break;
+        let args = {}; try { args = JSON.parse(tc.function.arguments||'{}'); } catch(e){}
+        addMsg('tool', '调用: '+tc.function.name+'\n参数: '+JSON.stringify(args).slice(0,200));
+        const result = await executeTool(tc.function.name, args);
+        addMsg('tool', result.output.slice(0,500));
+        // v8.5.x 审查修复：内层 let tc 会遮蔽循环变量 tc，导致 tool_call_id 取到 undefined；
+        // 改名 toolContent，并保持 tool_call_id 使用外层 tc.id
+        let toolContent = String(result.output||'');
+        if (toolContent.length > 15000) toolContent = toolContent.slice(0,15000)+'\n...(截断)';
+        messages.push({ role:'tool', tool_call_id: tc.id||'call_'+uid(), content: toolContent });
+        if (!result.ok) messages.push({ role:'system', content: '工具失败: '+String(result.output).slice(0,400) });
+      }
+      assistantContent = '';
+      bubbleEl = null;
+    }
+    $('#chat-sub').textContent = '就绪';
+  } catch(e) {
+    if (e.name === 'AbortError') { $('#chat-sub').textContent = '已停止'; }
+    else { addMsg('error', e.message); $('#chat-sub').textContent = '错误'; }
+  } finally {
+    State.busy = false;
+    State.abortCtrl = null;
+    $('#send-btn').textContent = '发送';
+    $('#send-btn').classList.remove('stop');
+    $('#messages').scrollTop = $('#messages').scrollHeight;
+  }
+}
+
+// 停止按钮（send-btn 在 busy 时充当停止）
+$('#send-btn') && document.addEventListener('click', e => {
+  if (e.target && e.target.id === 'send-btn' && State.busy) {
+    if (State.abortCtrl) { try { State.abortCtrl.abort(); } catch(e){} }
+  }
+});
+
+// 启动
+boot();
+</script>
+</body>
+</html>

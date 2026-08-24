@@ -1,0 +1,12 @@
+# 密钥与运行时数据：永不入库
+api_keys.py
+data/
+backups/
+Err.log
+*.log
+.env
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
