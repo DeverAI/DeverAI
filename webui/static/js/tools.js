@@ -1703,6 +1703,21 @@ function execBrowserStorageClear(args) {
   }
 }
 
+// v8.14b：eval 输出侧打码——console_eval 可用脚本直读 localStorage 绕过
+// browser_storage_get 的键级遮蔽，这里对返回值做同源策略脱敏（令牌精确替换 +
+// KEY_RE 字段遮蔽 + sk- 通用模式），纵深防御而非完美沙箱（产品语义保留 F12 能力）
+function _maskEvalOutput(out) {
+  let s = String(out);
+  try {
+    const tok = localStorage.getItem('deverai_token');
+    if (tok) s = s.split(tok).join('***');
+  } catch (e) { /* 隐私模式等 */ }
+  try {
+    if (typeof DevTools !== 'undefined' && typeof DevTools.mask === 'function') s = DevTools.mask(s);
+  } catch (e) { /* DevTools 未载入 */ }
+  return s.replace(/sk-[A-Za-z0-9_-]{6,}/g, 'sk-***');
+}
+
 function execBrowserConsoleEval(args) {
   try {
     const expr = String(args.expression || '').trim();
@@ -1715,7 +1730,7 @@ function execBrowserConsoleEval(args) {
       result === null ? '(null)' :
         typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result);
     if (output.length > 2000) output = output.slice(0, 2000) + '…（已截断）';
-    return { ok: true, output };
+    return { ok: true, output: _maskEvalOutput(output) };
   } catch (e) {
     return { ok: false, output: '执行失败: ' + (e.message || e) };
   }
