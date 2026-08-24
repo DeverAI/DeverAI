@@ -290,11 +290,36 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
     except (TypeError, ValueError):
         timeout = 120
 
+    async def _kill_tree() -> None:
+        """v8.14：Windows 下 proc.kill() 只杀 shell 本体，孙进程（cmd /c start ...）残留；
+        改用 taskkill /T /F 杀整棵进程树，失败回退 proc.kill()。"""
+        if proc is None or proc.returncode is not None:
+            return
+        if os.name == "nt" and proc.pid:
+            try:
+                k = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+                try:
+                    await asyncio.wait_for(k.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                pass
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except ProcessLookupError:
+            pass
+
     async def _gen():
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         proc = None
         try:
             try:
+                # v8.14：limit 提升到 1MB——StreamReader 默认 64KB 行上限会让
+                # 单行超长输出（如压缩后的 bundle.js）触发 ValueError 断流
                 proc = await asyncio.create_subprocess_shell(
                     cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -302,6 +327,7 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
                     stdin=asyncio.subprocess.DEVNULL,
                     cwd=str(cwd),
                     creationflags=creationflags,
+                    limit=1024 * 1024,
                 )
             except Exception:
                 # P2-3（查修）：OSError 消息可能含 cwd/命令路径 → 泛化文案防绝对路径泄露
@@ -325,12 +351,12 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
                 yield f'data: {json.dumps({"line": text}, ensure_ascii=False)}\n\n'
-            if timed_out and proc.returncode is None:
-                proc.kill()
+            if timed_out:
+                await _kill_tree()
             try:
                 rc = await asyncio.wait_for(proc.wait(), timeout=15)
             except asyncio.TimeoutError:
-                proc.kill()
+                await _kill_tree()
                 # P2-16：二次等待同样限时（对齐 lite_server），极端情况下不挂起生成器
                 try:
                     rc = await asyncio.wait_for(proc.wait(), timeout=10)
@@ -338,6 +364,25 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
                     rc = -1
                     timed_out = True
             yield f'data: {json.dumps({"done": True, "rc": rc, "timed_out": timed_out}, ensure_ascii=False)}\n\n'
+        except asyncio.CancelledError:
+            # v8.14：客户端断开走取消语义——清理后重抛，不在取消路径中 yield
+            await _kill_tree()
+            if proc is not None and proc.stdout:
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+            raise
+        except Exception as e:
+            # v8.14：通用兜底（对齐 lite_server）——任何异常都保证前端收到 done 事件，
+            # 而不是 SSE 流被掐断后以 rc:-1 误报命令失败
+            await _kill_tree()
+            try:
+                from .errors import log_error
+                log_error("[web] bridge/run_command 流异常", e)
+            except Exception:
+                pass
+            yield f'data: {json.dumps({"done": True, "rc": -1, "error": "执行异常"}, ensure_ascii=False)}\n\n'
         finally:
             # 内存安全：客户端断开/异常/超时时确保子进程被 kill、管道被关闭
             if proc is not None:
@@ -353,7 +398,8 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
                     except Exception:
                         pass
                 try:
-                    await proc.wait()
+                    # v8.14：等待也限时，防止极端情况下生成器悬挂
+                    await asyncio.wait_for(proc.wait(), timeout=10)
                 except Exception:
                     pass
 
@@ -369,34 +415,44 @@ async def fs_tree(path: str = "", user: dict = Depends(current_user)):
     # v8.13.1：data/backups 目录本身禁列，根目录列表中隐藏受保护子项（不泄露数据目录结构）
     if _is_read_protected(p, _workspace()):
         raise HTTPException(403, "该目录属于受保护数据，禁止列出")
-    if not p.is_dir():
-        raise HTTPException(404, "不是目录")  # v6.2：不回 path
-    entries = []
-    try:
-        items = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
-    except PermissionError:
-        raise HTTPException(403, "无权限访问该目录")
-    except OSError:
-        raise HTTPException(500, "读取目录失败")
-    items = [it for it in items
-             if it.name not in SKIP_DIRS and not _is_read_protected(it, _workspace())]
-    truncated = False
-    # v6.2 P2-3：目录树条目上限，防百万文件目录内存暴涨
-    if len(items) > _MAX_TREE_ENTRIES:
-        items = items[:_MAX_TREE_ENTRIES]
-        truncated = True
-    for it in items:
+
+    def _scan() -> dict:
+        if not p.is_dir():
+            raise HTTPException(404, "不是目录")  # v6.2：不回 path
+        entries = []
         try:
-            st = it.stat()
+            items = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except PermissionError:
+            raise HTTPException(403, "无权限访问该目录")
         except OSError:
-            st = None
-        entries.append({
-            "name": it.name,
-            "is_dir": it.is_dir(),
-            "size": st.st_size if st else 0,
-            "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)) if st else "",
-        })
-    return {"ok": True, "children": entries, "truncated": truncated}
+            raise HTTPException(500, "读取目录失败")
+        root = _workspace()
+        items = [it for it in items
+                 if it.name not in SKIP_DIRS and not _is_read_protected(it, root)]
+        truncated = False
+        # v6.2 P2-3：目录树条目上限，防百万文件目录内存暴涨
+        if len(items) > _MAX_TREE_ENTRIES:
+            items = items[:_MAX_TREE_ENTRIES]
+            truncated = True
+        for it in items:
+            try:
+                st = it.stat()
+            except OSError:
+                st = None
+            try:
+                is_dir = it.is_dir()
+            except OSError:
+                is_dir = False
+            entries.append({
+                "name": it.name,
+                "is_dir": is_dir,
+                "size": st.st_size if st else 0,
+                "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)) if st else "",
+            })
+        return {"ok": True, "children": entries, "truncated": truncated}
+
+    # v8.14：iterdir/逐项 stat 是同步磁盘 IO，移入线程池防阻塞事件循环（对齐 grep 先例）
+    return await asyncio.to_thread(_scan)
 
 
 @router.get("/fs/read")
@@ -405,16 +461,34 @@ async def fs_read(path: str = "", user: dict = Depends(current_user)):
     # v8.13.1：读只受「数据目录/密钥文件」保护，源码目录允许 Agent 查看
     if _is_read_protected(p, _workspace()):
         raise HTTPException(403, "该文件属于受保护数据，禁止读取")
-    if not p.is_file():
-        raise HTTPException(404, "文件不存在")  # v6.2：不回 path
-    size = p.stat().st_size
-    if size > 2 * 1024 * 1024:
-        raise HTTPException(413, "文件超过 2MB，编辑器不支持打开")
-    # P2-13：二进制检测——含 NUL 字节按二进制处理，明确提示而非返回 U+FFFD 乱码
-    if b"\x00" in p.read_bytes()[:8192]:
-        raise HTTPException(415, "二进制文件，不支持文本读取")
-    content = p.read_text(encoding="utf-8", errors="replace")
-    return {"ok": True, "content": content, "lines": len(content.splitlines()), "size": size}
+
+    def _read() -> dict:
+        # v8.14：stat/is_file 的 OSError 保护（同步自 lite_server v8.12 修复——
+        # Windows 上 ACL 受限/被占用文件此前会裸 500）
+        try:
+            if not p.is_file():
+                raise HTTPException(404, "文件不存在")  # v6.2：不回 path
+            size = p.stat().st_size
+        except OSError:
+            raise HTTPException(404, "文件不存在或不可访问")
+        if size > 2 * 1024 * 1024:
+            raise HTTPException(413, "文件超过 2MB，编辑器不支持打开")
+        try:
+            # P2-13：二进制检测——含 NUL 字节按二进制处理，明确提示而非返回 U+FFFD 乱码
+            # v8.14：只读前 8KB 探测 NUL，不再为取头部整读全文件
+            with open(p, "rb") as f:
+                head = f.read(8192)
+            if b"\x00" in head:
+                raise HTTPException(415, "二进制文件，不支持文本读取")
+            content = p.read_text(encoding="utf-8", errors="replace")
+        except HTTPException:
+            raise
+        except OSError:
+            raise HTTPException(500, "读取文件失败")
+        return {"ok": True, "content": content, "lines": len(content.splitlines()), "size": size}
+
+    # v8.14：同步磁盘 IO 移入线程池
+    return await asyncio.to_thread(_read)
 
 
 @router.post("/fs/write")
@@ -472,14 +546,19 @@ async def fs_delete(body: dict, user: dict = Depends(current_user)):
         raise HTTPException(403, "该文件属于系统受保护文件，禁止删除")
     if not p.exists():
         raise HTTPException(404, "不存在")
-    try:
-        if p.is_dir():
-            import shutil
-            shutil.rmtree(p)
-        else:
-            p.unlink()
-    except OSError as e:
-        raise HTTPException(500, "删除失败")  # v6.2：不回 e（可能含路径）
+
+    def _delete() -> None:
+        try:
+            if p.is_dir():
+                import shutil
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+        except OSError:
+            raise HTTPException(500, "删除失败")  # v6.2：不回 e（可能含路径）
+
+    # v8.14：rmtree 大目录可能耗时数秒到数十秒，移入线程池防冻结整个事件循环
+    await asyncio.to_thread(_delete)
     return {"ok": True}
 
 

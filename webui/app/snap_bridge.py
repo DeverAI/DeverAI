@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,7 +35,8 @@ router = APIRouter(prefix="/api/bridge", tags=["snap"])
 
 # 网页版独立的只读报警/激活轮次状态（按用户隔离，防多用户/多标签互锁）
 # 结构：{ username: {"readonly": bool, "reason": str, "round_id": str} }
-_STATE = {}
+# v8.14：OrderedDict 支持真实 LRU 淘汰
+_STATE = OrderedDict()
 _STATE_LOCK = threading.Lock()
 
 # P2-7：checkpoint/save 后端直读的文本大小上限（防整读超大文件 OOM）
@@ -42,19 +44,26 @@ _CK_MAX_BYTES = 50 * 1024 * 1024
 
 
 def _user_state(user: dict) -> dict:
-    """取用户状态（惰性建项）。"""
+    """取用户状态（惰性建项；命中即移到末尾，实现真实 LRU）。"""
     name = str((user or {}).get("username") or "anon")
     with _STATE_LOCK:
         st = _STATE.get(name)
-        if st is None:
-            # v8.13：多用户长期运行上限（LRU 近似：淘汰最早插入项）
-            if len(_STATE) >= 5000:
-                try:
-                    _STATE.pop(next(iter(_STATE)), None)
-                except StopIteration:
-                    pass
-            st = {"readonly": False, "reason": "", "round_id": ""}
-            _STATE[name] = st
+        if st is not None:
+            # v8.14：命中项 move_to_end，此前注释称 LRU 实为 FIFO，
+            # 极端情况下活跃用户的 readonly 状态会被误淘汰
+            try:
+                _STATE.move_to_end(name)
+            except AttributeError:
+                pass
+            return st
+        # v8.13：多用户长期运行上限（LRU：淘汰最久未用项）
+        if len(_STATE) >= 5000:
+            try:
+                _STATE.pop(next(iter(_STATE)), None)
+            except StopIteration:
+                pass
+        st = {"readonly": False, "reason": "", "round_id": ""}
+        _STATE[name] = st
         return st
 
 

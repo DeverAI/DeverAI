@@ -248,8 +248,15 @@ async def list_users(user: dict = Depends(auth.current_user)):
 # ------------------------------------------------------------------ #
 # v6.2 项目下载（真实项目包：打包源码目录，排除敏感/运行时数据）
 # ------------------------------------------------------------------ #
-# 项目根目录（app/ 的上一级，即工作区根）
+# 项目根目录（app/ 的上一级，即 webui/；v8.14：三版本分目录后打包基准随之修正）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = _PROJECT_ROOT.parent          # 仓库根（DeverAI/，存放共享文档与 lite 入口）
+
+# 各项目打包基准目录：桌面版在 pyqt/，网页版在 webui/
+_PROJECT_BASE = {
+    "deverai-desktop": _REPO_ROOT / "pyqt",
+    "deverai-web": _PROJECT_ROOT,
+}
 
 # 公开元数据（响应体只含这些字段，打包清单单独存放不泄露）
 _PROJECTS = [
@@ -259,13 +266,17 @@ _PROJECTS = [
      "description": "浏览器端 Agent，FastAPI 后端（本地资源桥 + LLM 代理）", "size": ""},
 ]
 
-# 打包清单：项目 id → 源文件/目录（相对项目根）
+# 打包清单：项目 id → 源文件/目录。
+# v8.14：相对各自基准目录解析；"../" 前缀 = 相对仓库根（共享文档 / Lite 入口）。
+# 归档名 = 清单项去掉 "../" 前缀后的路径。不存在的项静默跳过（向前兼容）。
 _PROJECT_INCLUDE = {
-    "deverai-desktop": ["desktop", "main.py", "cli_main.py", "requirements.txt", "README.md", "AGENT.txt",
-                        "Design.md", "Techniques.md", "Fact.md", "Future.md", "FreqErr.md"],
-    "deverai-web": ["app", "static", "web_main.py", "lite_main.py", "sync_server.py",
+    "deverai-desktop": ["desktop", "main.py", "cli_main.py",
+                        "requirements.txt", "README.md", "AGENT.txt",
+                        "../Design.md", "../Techniques.md", "../Fact.md", "../Future.md", "../FreqErr.md"],
+    "deverai-web": ["app", "static", "web_main.py",
+                    "../lite_main.py", "../sync_server.py",
                     "requirements.txt", "README.md", "AGENT.txt",
-                    "Design.md", "Techniques.md", "Fact.md", "Future.md", "FreqErr.md"],
+                    "../Design.md", "../Techniques.md", "../Fact.md", "../Future.md", "../FreqErr.md"],
 }
 
 # 排除：敏感数据（data/ 含 API Key）、备份、运行时缓存、大体积开发资料
@@ -283,15 +294,15 @@ _MAX_ZIP_FILE = 30 * 1024 * 1024   # 单文件进入分发包的大小上限（�
 def _path_excluded(p: Path) -> bool:
     """打包排除判定：敏感文件/目录/二进制资源不进入分发包。
 
-    只对「项目相对路径」判排除（P2-7：此前用绝对路径 parts，检出目录名撞上
-    data/tools/tests 等排除名时会把整包排空）。
+    只对「仓库相对路径」判排除（P2-7：不用绝对路径 parts，检出目录名撞上
+    data/tools/tests 等排除名时会把整包排空）；仓库外的路径退化为仅判文件名。
     """
     if p.name in _EXCLUDE_FILE_NAMES or p.suffix.lower() in _EXCLUDE_SUFFIXES:
         return True
     try:
-        parts = set(p.relative_to(_PROJECT_ROOT).parts)
+        parts = set(p.relative_to(_REPO_ROOT).parts)
     except ValueError:
-        parts = set(p.parts)
+        parts = {p.name}
     return bool(parts & (_EXCLUDE_DIR_NAMES | _EXCLUDE_DOT))
 
 
@@ -307,20 +318,34 @@ def _zip_ok(f: Path) -> bool:
     return True
 
 
-def _project_size_mb(include: list) -> str:
+def _iter_include(project_id: str, include: list):
+    """展开打包清单为 (源路径, 归档名) 序列。
+
+    v8.14：清单项按项目基准目录解析，"../" 前缀相对仓库根；
+    此前全部按 webui/ 解析——桌面版三项代码与 lite_main.py/sync_server.py
+    实际不存在于该目录，ZIP 静默缺文件。
+    """
+    base = _PROJECT_BASE.get(project_id, _PROJECT_ROOT)
+    for rel in include:
+        if rel.startswith("../"):
+            yield _REPO_ROOT / rel[3:], rel[3:]
+        else:
+            yield base / rel, rel
+
+
+def _project_size_mb(project_id: str, include: list) -> str:
     """打包内容体积（供列表展示，惰性计算 + 缓存；与 _build_project_zip 同规则）。"""
-    cache_key = tuple(include)
+    cache_key = (project_id, tuple(include))
     cached = _SIZE_CACHE.get(cache_key)
     if cached is not None:
         return cached
     total = 0
-    for rel in include:
-        p = _PROJECT_ROOT / rel
+    for src, _arc in _iter_include(project_id, include):
         try:
-            if p.is_file() and _zip_ok(p):
-                total += p.stat().st_size
-            elif p.is_dir():
-                for f in p.rglob("*"):
+            if src.is_file() and _zip_ok(src):
+                total += src.stat().st_size
+            elif src.is_dir():
+                for f in src.rglob("*"):
                     try:
                         if f.is_file() and not _path_excluded(f) and _zip_ok(f):
                             total += f.stat().st_size
@@ -334,23 +359,22 @@ def _project_size_mb(include: list) -> str:
     return text
 
 
-def _build_project_zip(include: list) -> io.BytesIO:
+def _build_project_zip(project_id: str, include: list) -> io.BytesIO:
     """把打包清单压成内存 ZIP（单个文件失败跳过，不整体 500；符号链接/超大文件跳过）。"""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for rel in include:
-            p = _PROJECT_ROOT / rel
-            if p.is_file() and _zip_ok(p):
+        for src, arc in _iter_include(project_id, include):
+            if src.is_file() and _zip_ok(src):
                 try:
-                    zf.write(p, rel)
+                    zf.write(src, arc)
                 except OSError:
                     continue
-            elif p.is_dir():
-                for f in sorted(p.rglob("*")):
+            elif src.is_dir():
+                for f in sorted(src.rglob("*")):
                     if not f.is_file() or _path_excluded(f) or not _zip_ok(f):
                         continue
                     try:
-                        zf.write(f, str(f.relative_to(_PROJECT_ROOT)).replace("\\", "/"))
+                        zf.write(f, (Path(arc) / f.relative_to(src)).as_posix())
                     except OSError:
                         continue
     buf.seek(0)
@@ -384,7 +408,7 @@ async def list_projects(user: dict = Depends(auth.current_user)):
     for p in _PROJECTS:
         expire = int(now + _DL_TTL)
         meta = dict(p)
-        meta["size"] = await asyncio.to_thread(_project_size_mb, _PROJECT_INCLUDE.get(p["id"], []))
+        meta["size"] = await asyncio.to_thread(_project_size_mb, p["id"], _PROJECT_INCLUDE.get(p["id"], []))
         meta["download_url"] = f"/api/projects/{p['id']}/download?expire={expire}&sig={_sign_download(p['id'], expire)}"
         meta["expires_in"] = _DL_TTL
         items.append(meta)
@@ -406,7 +430,7 @@ async def download_project(project_id: str, expire: int, sig: str,
         raise HTTPException(404, "项目不存在")
     security.audit("download", user=user["username"], ip=ip, detail=project_id)
     try:
-        buf = await asyncio.to_thread(_build_project_zip, include)
+        buf = await asyncio.to_thread(_build_project_zip, project_id, include)
     except Exception:
         log_error(f"[web] project zip {project_id}", None)
         raise HTTPException(500, "打包失败")

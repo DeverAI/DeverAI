@@ -310,7 +310,16 @@ async def llm_chat(request: Request, user: dict = Depends(current_user)):
             async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream("POST", target, json=payload, headers=headers) as resp:
                     if resp.status_code != 200:
-                        body_text = (await resp.aread()).decode("utf-8", errors="replace")[:600]
+                        # v8.14：只读前 600 字节即止——此前 aread() 先整读错误体再截断，
+                        # 异常上游可用超大错误体压内存
+                        chunks = []
+                        got = 0
+                        async for chunk in resp.aiter_bytes():
+                            chunks.append(chunk)
+                            got += len(chunk)
+                            if got >= 600:
+                                break
+                        body_text = b"".join(chunks)[:600].decode("utf-8", errors="replace")
                         # v6.2 P2-5：脱敏后再回传，避免泄露内部 URL/Key/IP
                         yield f'event: error\ndata: {json.dumps({"status": resp.status_code, "body": _sanitize_error(body_text)}, ensure_ascii=False)}\n\n'
                         return

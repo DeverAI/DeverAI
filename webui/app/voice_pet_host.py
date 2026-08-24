@@ -103,13 +103,22 @@ def _save_tasks(data: dict) -> None:
     save_json(VOICE_TASKS_PATH, data)
 
 
+# v8.14：JSON 读写是同步磁盘 IO，统一经线程池执行，防阻塞事件循环（对齐 bridge.py 风格）
+async def _t_load(fn, *a):
+    return await asyncio.to_thread(fn, *a)
+
+
+async def _t_save(fn, *a) -> None:
+    await asyncio.to_thread(fn, *a)
+
+
 # ==================== 配置端点 ====================
 
 @router.get("/config")
 async def get_pet_config(user: dict = Depends(current_user)):
     """获取语音助手配置（名字、大小、可见性、对话模式等）。"""
     _voice_check_enabled()
-    cfg = _load_pet_config()
+    cfg = await _t_load(_load_pet_config)
     # 补充默认值
     defaults = {
         "name": "小龙",
@@ -132,7 +141,7 @@ async def update_pet_config(body: dict, user: dict = Depends(current_user)):
     if not isinstance(body, dict):
         raise HTTPException(400, "请求体必须为 JSON 对象")
     async with _VOICE_LOCK:
-        cfg = _load_pet_config()
+        cfg = await _t_load(_load_pet_config)
         # 白名单字段
         if "name" in body and isinstance(body["name"], str):
             name = body["name"].strip()
@@ -149,7 +158,7 @@ async def update_pet_config(body: dict, user: dict = Depends(current_user)):
             cfg["mood_state"] = body["mood_state"][:32]
         if "builtin_sprite" in body and isinstance(body["builtin_sprite"], str):
             cfg["builtin_sprite"] = body["builtin_sprite"][:32]
-        _save_pet_config(cfg)
+        await _t_save(_save_pet_config, cfg)
     return {"ok": True, "config": cfg}
 
 
@@ -159,7 +168,7 @@ async def update_pet_config(body: dict, user: dict = Depends(current_user)):
 async def get_conversations(limit: int = 50, user: dict = Depends(current_user)):
     """获取对话历史（最近 limit 条）。"""
     _voice_check_enabled()
-    data = _load_conversations()
+    data = await _t_load(_load_conversations)
     convs = data.get("conversations", [])
     # 负/超大 limit 夹取，避免切片语义错误或全量回传
     try:
@@ -186,7 +195,7 @@ async def append_conversation(body: dict, user: dict = Depends(current_user)):
     if len(content) > _MAX_MSG_LEN:
         content = content[:_MAX_MSG_LEN]
     async with _VOICE_LOCK:
-        data = _load_conversations()
+        data = await _t_load(_load_conversations)
         convs = data.get("conversations", [])
         msg = {
             "id": _gen_id("cv_"),
@@ -201,7 +210,7 @@ async def append_conversation(body: dict, user: dict = Depends(current_user)):
         if len(convs) > _MAX_CONVERSATIONS:
             convs = convs[-_MAX_CONVERSATIONS:]
         data["conversations"] = convs
-        _save_conversations(data)
+        await _t_save(_save_conversations, data)
     return {"ok": True, "message": msg}
 
 
@@ -210,7 +219,7 @@ async def clear_conversations(user: dict = Depends(current_user)):
     """清空对话历史。"""
     _voice_check_enabled()
     async with _VOICE_LOCK:
-        _save_conversations({"conversations": []})
+        await _t_save(_save_conversations, {"conversations": []})
     return {"ok": True, "message": "对话历史已清空"}
 
 
@@ -220,7 +229,7 @@ async def clear_conversations(user: dict = Depends(current_user)):
 async def get_tasks(user: dict = Depends(current_user)):
     """获取任务列表（增强版，含进度/优先级/标签）。"""
     _voice_check_enabled()
-    data = _load_tasks()
+    data = await _t_load(_load_tasks)
     return {"ok": True, **data}
 
 
@@ -243,7 +252,7 @@ async def add_task(body: dict, user: dict = Depends(current_user)):
         tags = []
     tags = [str(t)[:32] for t in tags if isinstance(t, str)][:10]
     async with _VOICE_LOCK:
-        data = _load_tasks()
+        data = await _t_load(_load_tasks)
         tasks = data.get("tasks", [])
         if isinstance(tasks, dict):
             tasks = list(tasks.values())
@@ -263,7 +272,7 @@ async def add_task(body: dict, user: dict = Depends(current_user)):
         if len(tasks) > _MAX_TASKS:
             tasks = tasks[-_MAX_TASKS:]
         result = {"tasks": tasks}
-        _save_tasks(result)
+        await _t_save(_save_tasks, result)
     return {"ok": True, "task": task}
 
 
@@ -274,7 +283,7 @@ async def update_task(task_id: str, body: dict, user: dict = Depends(current_use
     if not isinstance(body, dict):
         raise HTTPException(400, "请求体必须为 JSON 对象")
     async with _VOICE_LOCK:
-        data = _load_tasks()
+        data = await _t_load(_load_tasks)
         tasks = data.get("tasks", [])
         if isinstance(tasks, dict):
             tasks = list(tasks.values())
@@ -309,7 +318,7 @@ async def update_task(task_id: str, body: dict, user: dict = Depends(current_use
             except (TypeError, ValueError, OverflowError):
                 pass
         target["updatedAt"] = _now_iso()
-        _save_tasks({"tasks": tasks})
+        await _t_save(_save_tasks, {"tasks": tasks})
     return {"ok": True, "task": target}
 
 
@@ -318,14 +327,14 @@ async def delete_task(task_id: str, user: dict = Depends(current_user)):
     """删除任务。"""
     _voice_check_enabled()
     async with _VOICE_LOCK:
-        data = _load_tasks()
+        data = await _t_load(_load_tasks)
         tasks = data.get("tasks", [])
         if isinstance(tasks, dict):
             tasks = list(tasks.values())
         new_tasks = [t for t in tasks if t.get("id") != task_id]
         if len(new_tasks) == len(tasks):
             raise HTTPException(404, f"任务 {task_id} 不存在")
-        _save_tasks({"tasks": new_tasks})
+        await _t_save(_save_tasks, {"tasks": new_tasks})
     return {"ok": True, "message": f"已删除任务 {task_id}"}
 
 
@@ -334,7 +343,7 @@ async def continue_next_task(user: dict = Depends(current_user)):
     """将最早一个 pending 任务标记为 done，返回执行报告。"""
     _voice_check_enabled()
     async with _VOICE_LOCK:
-        data = _load_tasks()
+        data = await _t_load(_load_tasks)
         tasks = data.get("tasks", [])
         if isinstance(tasks, dict):
             tasks = list(tasks.values())
@@ -343,7 +352,7 @@ async def continue_next_task(user: dict = Depends(current_user)):
                 t["status"] = "done"
                 t["progress"] = 100
                 t["updatedAt"] = _now_iso()
-                _save_tasks({"tasks": tasks})
+                await _t_save(_save_tasks, {"tasks": tasks})
                 return {"ok": True, "message": f"已完成任务：{t.get('title', '')}", "task": t}
         return {"ok": False, "message": "没有待办任务，全部已完成。"}
 
@@ -354,11 +363,11 @@ async def continue_next_task(user: dict = Depends(current_user)):
 async def get_progress(user: dict = Depends(current_user)):
     """获取进度摘要：任务统计 + 配置状态。"""
     _voice_check_enabled()
-    tasks_data = _load_tasks()
+    tasks_data = await _t_load(_load_tasks)
     tasks = tasks_data.get("tasks", [])
     if isinstance(tasks, dict):
         tasks = list(tasks.values())
-    pet_cfg = _load_pet_config()
+    pet_cfg = await _t_load(_load_pet_config)
     pending = [t for t in tasks if t.get("status") == "pending"]
     done = [t for t in tasks if t.get("status") == "done"]
     cancelled = [t for t in tasks if t.get("status") == "cancelled"]
