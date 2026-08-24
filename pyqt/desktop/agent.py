@@ -324,7 +324,10 @@ class Agent:
                 raise
 
             if usage:
-                usage_total = usage
+                # v8.14b：多轮累计而非覆盖（此前只保留最后一轮的 token 用量）
+                for k, v in (usage or {}).items():
+                    if isinstance(v, (int, float)):
+                        usage_total[k] = usage_total.get(k, 0) + v
             if finish == "length":
                 await self._emit({"type": "text_delta", "content": "\n\n> [!] 输出达到长度上限，可能不完整。"})
 

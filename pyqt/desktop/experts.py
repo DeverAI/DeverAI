@@ -494,7 +494,7 @@ async def run_expert_team(cfg: Config, user_message: str, emit,
                 await asyncio.gather(*[_run_one(t) for t in wave], return_exceptions=False)
 
     # ---- 3. 高级专家升级（按 token 计费开启 + need_senior）：先初核 → 重跑 → 终核 ----
-    form_items = []
+    # v8.14b：移除死赋值 form_items = []（第 4 步终轮核查会重新赋值）
     if getattr(cfg, "token_mode", False) and any(t.status == "实现不了" for t in feedbacks):
         pre_items = await _review(cfg, commander_cfg, user_message, feedbacks, emit)
         # 按专家名匹配表单条目（LLM 输出顺序/数量不可信，不可用 zip）

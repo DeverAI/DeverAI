@@ -305,8 +305,8 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
                     await asyncio.wait_for(k.wait(), timeout=10)
                 except asyncio.TimeoutError:
                     pass
-            except Exception:
-                pass
+            except BaseException:
+                pass  # v8.14b：含 CancelledError——清理路径必须走到末尾的同步兜底强杀
         try:
             if proc.returncode is None:
                 proc.kill()

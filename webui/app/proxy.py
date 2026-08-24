@@ -91,12 +91,23 @@ def _ip_of(host: str):
         return None
 
 
+def _canon_ip(a):
+    """v8.14b：IPv4-mapped IPv6（::ffff:127.0.0.1）显式解包为 IPv4 再判定。
+
+    部分旧 Python 版本 is_loopback/is_private 不展开 ipv4_mapped，会漏判
+    （与 lite_server 同源修复，保持两版语义一致）。
+    """
+    if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped:
+        return a.ipv4_mapped
+    return a
+
+
 def _is_loopback(host: str, infos=None) -> bool:
     """判断 host 是否为环回地址（127.0.0.1/localhost/::1/127.1 缩写）。"""
     host = (host or "").lower().strip()
     if host in _FORBIDDEN_NETLOCS or host.endswith(".localhost"):
         return True
-    a = _ip_of(host)
+    a = _canon_ip(_ip_of(host))
     if a is not None:
         return a.is_loopback
     if infos is None:
@@ -106,7 +117,7 @@ def _is_loopback(host: str, infos=None) -> bool:
             return False
     # 混合解析安全：任一解析结果命中环回即视为环回（any 而非 all）——
     # all 语义下「公网 + 环回」双解析可绕过拦截，而下游 HTTP 客户端可能连到环回那一条
-    return bool(infos) and any(ipaddress.ip_address(i[4][0]).is_loopback for i in infos)
+    return bool(infos) and any(_canon_ip(ipaddress.ip_address(i[4][0])).is_loopback for i in infos)
 
 
 def _is_private_nonloopback(host: str, infos=None) -> bool:
@@ -114,7 +125,7 @@ def _is_private_nonloopback(host: str, infos=None) -> bool:
 
     环回地址（本地 LLM）由 llm_allow_loopback 开关单独控制。
     """
-    a = _ip_of(host)
+    a = _canon_ip(_ip_of(host))
     if a is not None:
         return (a.is_private or a.is_link_local or a.is_unspecified
                 or not a.is_global) and not a.is_loopback
@@ -124,11 +135,11 @@ def _is_private_nonloopback(host: str, infos=None) -> bool:
         except OSError:
             return False
     return bool(infos) and any(
-        (ipaddress.ip_address(i[4][0]).is_private
-         or ipaddress.ip_address(i[4][0]).is_link_local
-         or ipaddress.ip_address(i[4][0]).is_unspecified
-         or not ipaddress.ip_address(i[4][0]).is_global)
-        and not ipaddress.ip_address(i[4][0]).is_loopback
+        (_canon_ip(ipaddress.ip_address(i[4][0])).is_private
+         or _canon_ip(ipaddress.ip_address(i[4][0])).is_link_local
+         or _canon_ip(ipaddress.ip_address(i[4][0])).is_unspecified
+         or not _canon_ip(ipaddress.ip_address(i[4][0])).is_global)
+        and not _canon_ip(ipaddress.ip_address(i[4][0])).is_loopback
         for i in infos
     )
 

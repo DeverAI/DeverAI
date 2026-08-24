@@ -70,7 +70,15 @@ async def stream_chat(
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", _url(cfg), json=payload, headers=_headers(cfg)) as resp:
                 if resp.status_code != 200:
-                    body = (await resp.aread()).decode("utf-8", errors="replace")[:600]
+                    # v8.14b：只读前 600 字节即止（对齐 webui proxy.py）——异常上游超大错误体不再整读入内存
+                    chunks = []
+                    got = 0
+                    async for chunk in resp.aiter_bytes():
+                        chunks.append(chunk)
+                        got += len(chunk)
+                        if got >= 600:
+                            break
+                    body = b"".join(chunks)[:600].decode("utf-8", errors="replace")
                     raise LLMError(f"模型服务返回 HTTP {resp.status_code}: {body}")
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):

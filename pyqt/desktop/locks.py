@@ -216,8 +216,12 @@ def _norm(p: str) -> str:
 
     v8.7 审查修复：`a/../b` 与 `b` 规范化后相同，杜绝「同一物理文件两种写法
     各自申报」绕过写权冲突检测（lost update）。
+    v8.14b：Windows/macOS 文件系统大小写不敏感——统一小写比较，否则两名专家
+    用不同大小写申报同一文件可各自获得写权，并发写同一物理文件。
     """
     s = str(p).replace("\\", "/").strip("/")
+    if os.name == "nt":
+        s = s.lower()
     parts = []
     for seg in s.split("/"):
         if seg in ("", "."):

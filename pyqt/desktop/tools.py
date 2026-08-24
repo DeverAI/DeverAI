@@ -447,9 +447,6 @@ async def tool_write_file(args, ctx: ToolContext) -> dict:
             old = ""
             old_size = 0
             existed = False
-    if crlf:
-        # 编辑器/模型侧文本一律 \n 规范，写回前还原为原文件 CRLF 风格
-        content = content.replace("\r\n", "\n").replace("\n", "\r\n")
     # v6.3 Checkpoint：写入前快照原文件内容（含空文件，防覆盖无痕）
     if getattr(ctx.cfg, "ENABLE_CHECKPOINT", True) and p.exists():
         try:
@@ -459,6 +456,8 @@ async def tool_write_file(args, ctx: ToolContext) -> dict:
         except Exception:
             pass  # 快照失败不阻塞写入（FreqErr：不得吞没主对话，但 checkpoint 是辅助）
     # v6.4 内联差异预览：写入前弹 diff 对比，用户接受才落盘
+    # （v8.14b：diff 必须在行尾还原之前做——old/new 都处于规范化 \n 形态，
+    #   否则 CRLF 文件每次都显示整文件变更）
     if not await _request_diff_approval(ctx, str(rel), old, content):
         return {"ok": False, "output": f"用户拒绝了写入 {rel}（差异预览取消）。"}
     # v8.3 轮内回退快照 + 工具调用记录（审批通过后，防幽灵回退点）
@@ -469,6 +468,9 @@ async def tool_write_file(args, ctx: ToolContext) -> dict:
                             tool_name="write_file", round_no=rno, existed=existed)
     except Exception:
         pass
+    if crlf:
+        # 编辑器/模型侧文本一律 \n 规范，写回前还原为原文件 CRLF 风格
+        content = content.replace("\r\n", "\n").replace("\n", "\r\n")
     try:
         atomic_write(p, content)  # v5: 强制 CoW（临时文件+原子替换）
     except OSError as e:
@@ -535,9 +537,6 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
     if count > 1 and not replace_all:
         return {"ok": False, "output": f"匹配到 {count} 处，请设置 replace_all=true 或提供更精确的 old_string（含上下文）。"}
     new_text = text.replace(old_str, new_str) if replace_all else text.replace(old_str, new_str, 1)
-    if crlf:
-        # 写回前还原为原文件 CRLF 风格（atomic_write 为精确写）
-        new_text = new_text.replace("\r\n", "\n").replace("\n", "\r\n")
     # v6.3 Checkpoint：编辑前快照原文件内容
     if getattr(ctx.cfg, "ENABLE_CHECKPOINT", True):
         try:
@@ -547,6 +546,7 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
         except Exception:
             pass
     # v6.4 内联差异预览：编辑前弹 diff 对比，用户接受才落盘
+    # （v8.14b：diff 必须在行尾还原之前做，old/new 均为规范化 \n 形态）
     if not await _request_diff_approval(ctx, str(rel), text, new_text):
         return {"ok": False, "output": f"用户拒绝了编辑 {rel}（差异预览取消）。"}
     # v8.3 轮内回退快照 + 工具调用记录（审批通过后，防幽灵回退点）
@@ -557,6 +557,9 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
                             tool_name="edit_file", round_no=rno)
     except Exception:
         pass
+    if crlf:
+        # 写回前还原为原文件 CRLF 风格（atomic_write 为精确写）
+        new_text = new_text.replace("\r\n", "\n").replace("\n", "\r\n")
     try:
         atomic_write(p, new_text)  # v5: 强制 CoW
     except OSError as e:

@@ -454,7 +454,11 @@ async function runSession(userText) {
         onDelta: (text) => emit({ type: 'text_delta', content: text }),
       });
       if (resp.usage && (resp.usage.prompt_tokens || resp.usage.completion_tokens)) {
-        usage = resp.usage;
+        // v8.14b：多轮累计而非覆盖（此前只显示最后一轮的 token 用量）
+        for (const k of ['prompt_tokens', 'completion_tokens', 'total_tokens']) {
+          const v = Number(resp.usage[k]);
+          if (Number.isFinite(v)) usage[k] = (Number(usage[k]) || 0) + v;
+        }
       }
 
       const assistantMsg = { role: 'assistant', content: resp.content || '' };
