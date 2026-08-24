@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import html
 
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QObject, QEvent, QPoint
-from PyQt5.QtGui import QKeySequence
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QObject, QEvent, QPoint
+from PyQt6.QtGui import QKeySequence, QAction
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser,
-    QToolBar, QAction, QMenu, QApplication, QFrame,
+    QToolBar, QMenu, QApplication, QFrame,
 )
 
 from .md import md_to_html
@@ -82,19 +82,19 @@ class _DragFilter(QObject):
 
     def eventFilter(self, obj, ev):
         t = ev.type()
-        if t == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
-            self._offset = ev.globalPos() - self._win.pos()
+        if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+            self._offset = ev.globalPosition().toPoint() - self._win.pos()
             return True
-        if t == QEvent.MouseMove and self._offset is not None:
-            if ev.buttons() & Qt.LeftButton:
-                self._move_within(ev.globalPos() - self._offset)
+        if t == QEvent.Type.MouseMove and self._offset is not None:
+            if ev.buttons() & Qt.MouseButton.LeftButton:
+                self._move_within(ev.globalPosition().toPoint() - self._offset)
             else:
                 self._offset = None
             return True
-        if t == QEvent.MouseButtonRelease and ev.button() == Qt.LeftButton:
+        if t == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
             self._offset = None
             return True
-        if t in (QEvent.Leave, QEvent.Hide, QEvent.FocusOut):
+        if t in (QEvent.Type.Leave, QEvent.Type.Hide, QEvent.Type.FocusOut):
             self._offset = None
             return False
         return False
@@ -115,7 +115,7 @@ class TracePreviewDialog(QDialog):
         self.setWindowTitle(f"轨迹详情 — {_ROLE_META.get(item.get('role', 'assistant'), _ROLE_META['assistant'])['label']}")
         self.setModal(False)
         # P3-2 修复：关闭即销毁，避免 _previews 列表堆积隐藏实例
-        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         # 窗口尺寸：默认 800×640，限制范围
         self.setMinimumSize(QSize(600, 400))
         screen = QApplication.primaryScreen()
@@ -135,7 +135,7 @@ class TracePreviewDialog(QDialog):
         # 顶部标题区（可拖动移动窗口）
         self._head = QFrame()
         self._head.setObjectName("tracepreview_head")
-        self._head.setCursor(Qt.SizeAllCursor)
+        self._head.setCursor(Qt.CursorShape.SizeAllCursor)
         self._head.setToolTip("按住此处拖动移动窗口")
         meta = _ROLE_META.get(item.get("role", "assistant"), _ROLE_META["assistant"])
         head_lay = QHBoxLayout(self._head)
@@ -214,7 +214,7 @@ class TracePreviewDialog(QDialog):
         # 阻止浏览器默认导航，仅触发 anchorClicked（元素「引用」锚点）
         self._view.setOpenLinks(False)
         # 给 view 设置 contextMenuPolicy，自定义右键菜单
-        self._view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._on_context_menu)
         self._view.anchorClicked.connect(self._on_anchor)
         v.addWidget(self._view, 1)
@@ -291,7 +291,7 @@ class TracePreviewDialog(QDialog):
         """切换置顶（悬浮）状态：WindowStaysOnTopHint。"""
         self._pinned = bool(on)
         was_visible = self.isVisible()
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, self._pinned)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._pinned)
         if was_visible:
             self.show()
             self.raise_()
@@ -362,4 +362,4 @@ class TracePreviewDialog(QDialog):
         menu.addSeparator()
         act_quote_all = menu.addAction("引用全部到对话")
         act_quote_all.triggered.connect(self._quote_all)
-        menu.exec_(self._view.viewport().mapToGlobal(pos))
+        menu.exec(self._view.viewport().mapToGlobal(pos))

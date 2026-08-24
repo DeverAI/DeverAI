@@ -11,7 +11,7 @@ import asyncio
 import threading
 from typing import Callable, List, Optional
 
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 
 from . import sync as sync_mod
 from .config import get_config

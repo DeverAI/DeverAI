@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import html
 
-from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRect
-from PyQt5.QtGui import QColor, QPainter, QPixmap, QMouseEvent, QFont, QPolygon
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRect
+from PyQt6.QtGui import QColor, QPainter, QPixmap, QMouseEvent, QFont, QPolygon
+from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QScrollArea, QTextBrowser, QToolButton, QMenu,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QApplication,
@@ -57,7 +57,7 @@ class QuestSidebar(QWidget):
         brand = QHBoxLayout()
         mark = QLabel("D")
         mark.setObjectName("brandmark")
-        mark.setAlignment(Qt.AlignCenter)
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mark.setFixedSize(26, 26)
         name = QLabel("DEVERAI")
         name.setObjectName("brandname")
@@ -69,7 +69,7 @@ class QuestSidebar(QWidget):
 
         self.new_btn = QPushButton("＋  New Task")
         self.new_btn.setObjectName("newquest")
-        self.new_btn.setCursor(Qt.PointingHandCursor)
+        self.new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.new_btn.clicked.connect(self.new_quest_requested.emit)
         root.addWidget(self.new_btn)
 
@@ -108,14 +108,14 @@ class QuestSidebar(QWidget):
 
         line = QFrame()
         line.setObjectName("sidebarline")
-        line.setFrameShape(QFrame.HLine)
+        line.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(line)
         self.settings_btn = self._nav_button("Settings")
         self.settings_btn.clicked.connect(self.settings_requested.emit)
         root.addWidget(self.settings_btn)
         self.workspace_lbl = QLabel("Workspace · not set")
         self.workspace_lbl.setObjectName("sidebarworkspace")
-        self.workspace_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.workspace_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(self.workspace_lbl)
 
     @staticmethod
@@ -129,7 +129,7 @@ class QuestSidebar(QWidget):
         button = QPushButton(text)
         button.setObjectName("navitem")
         button.setProperty("active", "true" if active else "false")
-        button.setCursor(Qt.PointingHandCursor)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
         return button
 
     def set_workspace(self, name: str):
@@ -163,15 +163,15 @@ class HeroWidget(QWidget):
         v.addStretch(1)
         self.logo = QLabel()
         self.logo.setFixedSize(72, 72)
-        self.logo.setAlignment(Qt.AlignCenter)
-        v.addWidget(self.logo, 0, Qt.AlignHCenter)
+        self.logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self.logo, 0, Qt.AlignmentFlag.AlignHCenter)
         self.title = QLabel("Hands-off workspace")
         self.title.setObjectName("herotitle")
-        self.title.setAlignment(Qt.AlignCenter)
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self.title)
         self.sub = QLabel("工作区: 未设置")
         self.sub.setObjectName("herosub")
-        self.sub.setAlignment(Qt.AlignCenter)
+        self.sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self.sub)
         v.addStretch(1)
         self._p: dict = {}
@@ -183,10 +183,10 @@ class HeroWidget(QWidget):
         """主题切换时重绘 logo（圆底 + atom 图标）。"""
         self._p = p
         pm = QPixmap(72, 72)
-        pm.fill(Qt.transparent)
+        pm.fill(Qt.GlobalColor.transparent)
         pa = QPainter(pm)
-        pa.setRenderHint(QPainter.Antialiasing, True)
-        pa.setPen(Qt.NoPen)
+        pa.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pa.setPen(Qt.PenStyle.NoPen)
         # QColor 不解析 CSS 的 rgba(...) 字符串；使用色板中的十六进制 field，
         # 否则无效 QColor 会退化成实心黑圆。
         circle = QColor(p.get("field", p.get("border", "#eef1f5")))
@@ -216,7 +216,7 @@ class Section(QWidget):
         v.setSpacing(2)
         self.head = QPushButton()
         self.head.setObjectName("sechead")
-        self.head.setCursor(Qt.PointingHandCursor)
+        self.head.setCursor(Qt.CursorShape.PointingHandCursor)
         self.head.clicked.connect(lambda: self.set_expanded(not self.content.isVisible()))
         v.addWidget(self.head)
         self.content = content
@@ -241,7 +241,7 @@ class StatusRow(QWidget):
         super().__init__(parent)
         self.setObjectName("statusrow")
         self.setToolTip(tip)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._on_txt, self._off_txt = on_txt, off_txt
         self._checked = False
         h = QHBoxLayout(self)
@@ -267,7 +267,7 @@ class StatusRow(QWidget):
             st.polish(self.state_lbl)
 
     def mousePressEvent(self, ev):
-        if ev.button() != Qt.LeftButton:
+        if ev.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(ev)
             return
         self.setChecked(not self._checked)
@@ -287,7 +287,7 @@ class ModelPickerPopup(QWidget):
     manage_requested = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__(parent, Qt.Popup)
+        super().__init__(parent, Qt.WindowType.Popup)
         self.setObjectName("modelpopup")
         self.setFixedWidth(330)
         v = QVBoxLayout(self)
@@ -307,7 +307,7 @@ class ModelPickerPopup(QWidget):
         v.addLayout(self._rows_box)
 
         sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShape(QFrame.Shape.HLine)
         sep.setObjectName("popsep")
         v.addWidget(sep)
 
@@ -327,7 +327,7 @@ class ModelPickerPopup(QWidget):
         self.btn_plus.setIcon(svg_icon("plus", 14))
         self.btn_plus.setFixedSize(26, 26)
         self.btn_plus.setToolTip("模型注册表管理")
-        # 先关弹窗再开模态设置框，避免 Qt.Popup 压住对话框
+        # 先关弹窗再开模态设置框，避免 Qt.WindowType.Popup 压住对话框
         self.btn_plus.clicked.connect(lambda: (self.hide(), self.manage_requested.emit()))
         seg.addWidget(self.btn_pilot)
         seg.addWidget(self.btn_copilot)
@@ -381,7 +381,7 @@ class ModelPickerPopup(QWidget):
                 ratio.setObjectName("ratio")
                 h.addWidget(ratio)
             it = QListWidgetItem()
-            it.setData(Qt.UserRole, m.id)
+            it.setData(Qt.ItemDataRole.UserRole, m.id)
             self.listw.addItem(it)
             self.listw.setItemWidget(it, w)
         self._highlight_current()
@@ -391,12 +391,12 @@ class ModelPickerPopup(QWidget):
         cur = cfg.model if self._role == "pilot" else (cfg.copilot_model or cfg.model)
         for i in range(self.listw.count()):
             it = self.listw.item(i)
-            if it.data(Qt.UserRole) == cur:
+            if it.data(Qt.ItemDataRole.UserRole) == cur:
                 self.listw.setCurrentItem(it)
                 break
 
     def _on_pick(self, item):
-        mid = item.data(Qt.UserRole)
+        mid = item.data(Qt.ItemDataRole.UserRole)
         if mid:
             self.model_picked.emit(self._role, str(mid))
         self.hide()
@@ -455,7 +455,7 @@ class GlobalSuggestPanel(QWidget):
 
         sep = QFrame()
         sep.setObjectName("gs_sep")
-        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(sep)
 
         # 内容区
@@ -465,7 +465,7 @@ class GlobalSuggestPanel(QWidget):
         self.stack_lay.setSpacing(6)
         self.empty_lbl = QLabel("暂无编辑建议，请先进行编码操作…")
         self.empty_lbl.setObjectName("gs_empty")
-        self.empty_lbl.setAlignment(Qt.AlignCenter)
+        self.empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_lbl.setWordWrap(True)
         self.stack_lay.addWidget(self.empty_lbl)
         self.stack_lay.addStretch(1)
@@ -542,7 +542,7 @@ class GlobalSuggestPanel(QWidget):
         if not self._items:
             self.empty_lbl = QLabel("暂无编辑建议，请先进行编码操作…")
             self.empty_lbl.setObjectName("gs_empty")
-            self.empty_lbl.setAlignment(Qt.AlignCenter)
+            self.empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.empty_lbl.setWordWrap(True)
             self.stack_lay.addWidget(self.empty_lbl)
             self.stack_lay.addStretch(1)
@@ -589,13 +589,13 @@ class GlobalSuggestPanel(QWidget):
         row.setSpacing(6)
         adopt = QPushButton("采纳")
         adopt.setObjectName("gs_adopt")
-        adopt.setCursor(Qt.PointingHandCursor)
+        adopt.setCursor(Qt.CursorShape.PointingHandCursor)
         adopt.setProperty("item", item)
         adopt.clicked.connect(lambda _=False, it=item, d=detail:
                               self.suggest_adopted.emit(it, d))
         dismiss = QPushButton("忽略")
         dismiss.setObjectName("gs_dismiss")
-        dismiss.setCursor(Qt.PointingHandCursor)
+        dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
         dismiss.setProperty("item", item)
         dismiss.clicked.connect(lambda _=False, i=item: self.suggest_dismissed.emit(i))
         row.addWidget(adopt)
@@ -630,9 +630,9 @@ class SummaryPanel(QWidget):
         self.vault = vault
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setObjectName("sumscroll")
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QWidget()
         v = QVBoxLayout(inner)
         v.setContentsMargins(8, 8, 8, 8)
@@ -901,8 +901,8 @@ class TraceTimeline(QWidget):
             return
         if not self._items:
             return
-        if ev.button() == Qt.LeftButton:
-            t = self._x_to_time(ev.x())
+        if ev.button() == Qt.MouseButton.LeftButton:
+            t = self._x_to_time(ev.position().x())
             idx = self._nearest_item_index(t)
             if idx < 0:
                 return
@@ -913,31 +913,31 @@ class TraceTimeline(QWidget):
                     ev.accept()
                     return
             # 划选区间 + 记录 mousedown 信息（P2-1：单击延时判定）
-            self._mouse_down = {"x": ev.x(), "y": ev.y(), "t": t, "idx": idx}
+            self._mouse_down = {"x": ev.position().x(), "y": ev.position().y(), "t": t, "idx": idx}
             self._drag_start = t
             self._drag_end = t
             self.update()
             ev.accept()
-        elif ev.button() == Qt.RightButton:
-            t = self._x_to_time(ev.x())
+        elif ev.button() == Qt.MouseButton.RightButton:
+            t = self._x_to_time(ev.position().x())
             # 右键点击 marker → 菜单
             for m_i, m in enumerate(self._markers):
                 if abs(m.get("idx", -1) - self._nearest_item_index(t)) < 2:
-                    self._show_marker_menu(ev.globalPos(), m_i)
+                    self._show_marker_menu(ev.globalPosition().toPoint(), m_i)
                     ev.accept()
                     return
 
     def mouseMoveEvent(self, ev: QMouseEvent):
         if not self._advanced:
             return
-        if self._drag_start is not None and (ev.buttons() & Qt.LeftButton):
-            self._drag_end = self._x_to_time(ev.x())
+        if self._drag_start is not None and (ev.buttons() & Qt.MouseButton.LeftButton):
+            self._drag_end = self._x_to_time(ev.position().x())
             self.update()
 
     def mouseReleaseEvent(self, ev: QMouseEvent):
         if not self._advanced:
             return
-        if ev.button() == Qt.LeftButton and self._drag_start is not None:
+        if ev.button() == Qt.MouseButton.LeftButton and self._drag_start is not None:
             t0 = self._drag_start
             t1 = self._drag_end if self._drag_end is not None else t0
             info = self._mouse_down
@@ -947,7 +947,7 @@ class TraceTimeline(QWidget):
             if abs(t1 - t0) < 0.001:
                 # P2-1 修复：单击位移 < 6px 才视为有效点击，延时 250ms 后新增标记
                 # 双击会抢先 cancel 掉这个 timer，避免重复添加
-                if not info or abs(ev.x() - info["x"]) > 6 or abs(ev.y() - info["y"]) > 6:
+                if not info or abs(ev.position().x() - info["x"]) > 6 or abs(ev.position().y() - info["y"]) > 6:
                     return
                 idx = info["idx"]
                 self._pending_click_idx = idx
@@ -955,7 +955,7 @@ class TraceTimeline(QWidget):
                     self._pending_click_timer.stop()
                 except Exception:
                     pass
-                from PyQt5.QtCore import QTimer
+                from PyQt6.QtCore import QTimer
                 self._pending_click_timer = QTimer(self)
                 self._pending_click_timer.setSingleShot(True)
                 self._pending_click_timer.timeout.connect(self._commit_pending_click)
@@ -989,7 +989,7 @@ class TraceTimeline(QWidget):
                 pass
         if not self._items:
             return
-        t = self._x_to_time(ev.x())
+        t = self._x_to_time(ev.position().x())
         idx = self._nearest_item_index(t)
         if idx >= 0:
             # 去重
@@ -1002,7 +1002,7 @@ class TraceTimeline(QWidget):
         menu = QMenu(self)
         act_del = menu.addAction("删除该标记")
         act_clear = menu.addAction("清除全部标记")
-        chosen = menu.exec_(global_pos)
+        chosen = menu.exec(global_pos)
         if chosen is act_del:
             self.remove_marker(marker_idx)
         elif chosen is act_clear:
@@ -1011,7 +1011,7 @@ class TraceTimeline(QWidget):
 
     def paintEvent(self, ev):
         pa = QPainter(self)
-        pa.setRenderHint(QPainter.Antialiasing, True)
+        pa.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w, h = self.width(), self.height()
         pal = QApplication.palette()
         bg = pal.color(pal.Base)
@@ -1020,7 +1020,7 @@ class TraceTimeline(QWidget):
         if not faint.isValid():
             faint = QColor("#9ca3af")
         pa.fillRect(self.rect(), bg)
-        pa.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        pa.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.Bold))
         pa.setPen(fg)
         dur = self._duration_s
         dur_txt = f"Duration {dur//60:02d}:{dur%60:02d}" if dur >= 60 else f"Duration {dur}s"
@@ -1055,7 +1055,7 @@ class TraceTimeline(QWidget):
             x = 12 + int(((t - t0) / span) * usable_w)
             color = QColor(meta["color"])
             pa.setBrush(color)
-            pa.setPen(Qt.NoPen)
+            pa.setPen(Qt.PenStyle.NoPen)
             pa.drawRoundedRect(x, bar_top, max(4, int(usable_w * 0.015)), bar_h, 2, 2)
         # 标记点（黄色倒三角 ▼ 落在条形顶部）
         for m in self._markers:
@@ -1119,7 +1119,7 @@ class TraceFlow(QWidget):
         v.setSpacing(6)
         self.listw = QListWidget()
         self.listw.setSpacing(4)
-        self.listw.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.listw.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         if advanced:
             self.listw.itemDoubleClicked.connect(self._on_item_double_clicked)
         v.addWidget(self.listw, 1)
@@ -1151,7 +1151,7 @@ class TraceFlow(QWidget):
             widget = self._build_card(item)
             li = QListWidgetItem()
             li.setSizeHint(widget.sizeHint())
-            li.setData(Qt.UserRole, item.get("__idx", len(self._all_items) - 1))
+            li.setData(Qt.ItemDataRole.UserRole, item.get("__idx", len(self._all_items) - 1))
             self.listw.addItem(li)
             self.listw.setItemWidget(li, widget)
             self.listw.scrollToBottom()
@@ -1170,7 +1170,7 @@ class TraceFlow(QWidget):
         # 遍历 listw 反查：找 data == idx 的 QListWidgetItem
         for i in range(self.listw.count()):
             li = self.listw.item(i)
-            if li is not None and li.data(Qt.UserRole) == idx:
+            if li is not None and li.data(Qt.ItemDataRole.UserRole) == idx:
                 self.listw.scrollToItem(li, self.listw.PositionAtCenter)
                 return
 
@@ -1198,7 +1198,7 @@ class TraceFlow(QWidget):
     def _on_item_double_clicked(self, li: QListWidgetItem):
         if li is None:
             return
-        idx = li.data(Qt.UserRole)
+        idx = li.data(Qt.ItemDataRole.UserRole)
         if idx is None:
             return
         if 0 <= idx < len(self._all_items):
@@ -1238,7 +1238,7 @@ class TraceFlow(QWidget):
             items = [it for it in items if self._matches(it)]
         if not items:
             li = QListWidgetItem("暂无轨迹（请检查筛选条件）" if self._all_items else "暂无轨迹")
-            li.setFlags(Qt.NoItemFlags)
+            li.setFlags(Qt.ItemFlag.NoItemFlags)
             self.listw.addItem(li)
             return
         for idx, it in enumerate(items):
@@ -1246,7 +1246,7 @@ class TraceFlow(QWidget):
             li = QListWidgetItem()
             li.setSizeHint(widget.sizeHint())
             # P1-1 修复：存真实 __idx 而非过滤后下标，避免筛选激活时点错条目
-            li.setData(Qt.UserRole, it.get("__idx", idx))
+            li.setData(Qt.ItemDataRole.UserRole, it.get("__idx", idx))
             self.listw.addItem(li)
             self.listw.setItemWidget(li, widget)
 
@@ -1278,7 +1278,7 @@ class TraceFlow(QWidget):
         if self._advanced:
             detail_btn = QPushButton("详情")
             detail_btn.setObjectName("flatbtn")
-            detail_btn.setCursor(Qt.PointingHandCursor)
+            detail_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             detail_btn.setToolTip("查看完整详情（可缩放/可引用文字）")
             detail_btn.clicked.connect(lambda _=False, it=item: self.item_activated.emit(it))
             head.addWidget(detail_btn)
@@ -1371,8 +1371,8 @@ class TracePanel(QWidget):
             self.ops_btn = QToolButton()
             self.ops_btn.setObjectName("trace_ops")
             self.ops_btn.setText("操作 ▾")
-            self.ops_btn.setPopupMode(QToolButton.InstantPopup)
-            self.ops_btn.setCursor(Qt.PointingHandCursor)
+            self.ops_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            self.ops_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.ops_btn.setToolTip("按角色多选（system/context/user/assistant/tool）")
             self._build_ops_menu()
             ctrl_row.addWidget(self.ops_btn)
@@ -1387,14 +1387,14 @@ class TracePanel(QWidget):
             self.case_btn.setObjectName("trace_case")
             self.case_btn.setText("Aa")
             self.case_btn.setCheckable(True)
-            self.case_btn.setCursor(Qt.PointingHandCursor)
+            self.case_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.case_btn.setToolTip("区分大小写")
             self.case_btn.toggled.connect(self.flow.set_case_sensitive)
             ctrl_row.addWidget(self.case_btn)
             # 清空
             clear_btn = QPushButton("清空")
             clear_btn.setObjectName("flatbtn")
-            clear_btn.setCursor(Qt.PointingHandCursor)
+            clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             clear_btn.clicked.connect(self.clear)
             ctrl_row.addWidget(clear_btn)
             v.addLayout(ctrl_row)
@@ -1409,7 +1409,7 @@ class TracePanel(QWidget):
             search_row.addWidget(self.search_inp)
             clear_btn = QPushButton("清空")
             clear_btn.setObjectName("flatbtn")
-            clear_btn.setCursor(Qt.PointingHandCursor)
+            clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             clear_btn.clicked.connect(self.clear)
             search_row.addWidget(clear_btn)
             v.addLayout(search_row)

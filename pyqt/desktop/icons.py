@@ -13,9 +13,9 @@
 from __future__ import annotations
 import re
 from pathlib import Path
-from PyQt5.QtCore import QByteArray, QSize, Qt
-from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor
-from PyQt5.QtSvg import QSvgRenderer
+from PyQt6.QtCore import QByteArray, QSize, Qt
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
+from PyQt6.QtSvg import QSvgRenderer
 
 _ICONS_DIR = Path(__file__).resolve().parent.parent / "static" / "icons"
 
@@ -117,7 +117,7 @@ def render_pixmap(name: str, size: int = 16, color: QColor | None = None) -> QPi
     if svg_text is None:
         # 兜底：透明空 pixmap
         pm = QPixmap(size, size)
-        pm.fill(Qt.transparent)
+        pm.fill(Qt.GlobalColor.transparent)
         _pixmap_cache[key] = pm
         return pm
 
@@ -126,15 +126,15 @@ def render_pixmap(name: str, size: int = 16, color: QColor | None = None) -> QPi
     renderer = QSvgRenderer(recolored)
     if not renderer.isValid():
         pm = QPixmap(size, size)
-        pm.fill(Qt.transparent)
+        pm.fill(Qt.GlobalColor.transparent)
         _pixmap_cache[key] = pm
         return pm
 
     pm = QPixmap(size, size)
-    pm.fill(Qt.transparent)
+    pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     renderer.render(p)
     p.end()
     _pixmap_cache[key] = pm

@@ -3,7 +3,7 @@
 """
 import asyncio
 
-from PyQt5.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from .config import Config
 from .llm import chat_complete, stream_chat

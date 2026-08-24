@@ -4,7 +4,7 @@
   脚本（cwd=脚本目录），轮询等待顶层窗口出现（Windows: FindWindow/EnumWindows；
   其它平台 fallback 等待固定时间），用 Qt QScreen.grabWindow 截图保存，结束后杀进程。
 - find_window_pid(pid, title_hint)：枚举顶层窗口找指定 pid 的第一个可见窗口 hwnd。
-- 设计：轻量化零第三方依赖（PyQt5 已装）；适配 PyQt/Tkinter 等任何能创建窗口的脚本。
+- 设计：轻量化零第三方依赖（PyQt6 已装）；适配 PyQt/Tkinter 等任何能创建窗口的脚本。
 - 截图质量：先置前窗口（SetForegroundWindow）再 grabWindow，保证内容渲染完整。
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QObject, pyqtSlot  # noqa: F401  # _GrabBridge 需要 QObject 基类
+from PyQt6.QtCore import QObject, pyqtSlot  # noqa: F401  # _GrabBridge 需要 QObject 基类
 
 # 每次等待窗口的最大轮询时长（秒）
 _WAIT_STEP = 0.35
@@ -108,7 +108,7 @@ class _GrabBridge(QObject):
 
     @pyqtSlot("long long", str)
     def _do(self, hwnd: int, out_path: str) -> None:
-        from PyQt5.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is None:
             self.ok = False
@@ -126,8 +126,8 @@ class _GrabBridge(QObject):
 
 def _grab(hwnd: int, out_path: str) -> bool:
     """在主线程执行 QScreen.grabWindow 截图（跨线程安全）。"""
-    from PyQt5.QtCore import QMetaObject, Q_ARG, Qt
-    from PyQt5.QtWidgets import QApplication
+    from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
+    from PyQt6.QtWidgets import QApplication
     app = QApplication.instance()
     if app is None:
         return False  # 无 Qt 应用（web/lite/服务器场景）：不硬造实例
@@ -142,7 +142,7 @@ def _grab(hwnd: int, out_path: str) -> bool:
     bridge.moveToThread(app.thread())  # 归属主线程，invokeMethod 才会投递到主线程事件循环
     QMetaObject.invokeMethod(
         bridge, "_do",
-        Qt.BlockingQueuedConnection,
+        Qt.ConnectionType.BlockingQueuedConnection,
         Q_ARG("long long", int(hwnd)), Q_ARG("str", str(out_path)))
     return bridge.ok
 

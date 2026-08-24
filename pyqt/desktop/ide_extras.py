@@ -5,14 +5,14 @@
 - 命令面板：Ctrl+Shift+P 弹出，模糊匹配文件/主题/模式/动作
 - Checkpoint 恢复：右键菜单列出最近 AI 改动快照，一键恢复
 
-轻量化原则：纯 PyQt5 内置组件，不引入新依赖。
+轻量化原则：纯 PyQt6 内置组件，不引入新依赖。
 """
 from __future__ import annotations
 from typing import List
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QTextCursor, QTextCharFormat, QColor, QFont
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont
+from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QDialog, QLineEdit, QVBoxLayout, QLabel,
     QMenu, QMessageBox, QWidget, QHBoxLayout, QPlainTextEdit, QPushButton,
     QDialogButtonBox, QSplitter,
@@ -38,8 +38,8 @@ class FileMentionPopup(QListWidget):
         super().__init__(parent_input)
         self._provider = file_provider
         self._on_picked = on_picked
-        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
-        self.setFocusPolicy(Qt.NoFocus)
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMaximumHeight(220)
         self.itemClicked.connect(self._pick)
         self._anchor = ""   # @ 在文本中的位置
@@ -85,7 +85,7 @@ class FileMentionPopup(QListWidget):
             cur = inp.textCursor()
             cur_pos = cur.position()
             if cur_pos > self._anchor:
-                cur.setPosition(self._anchor, QTextCursor.KeepAnchor)
+                cur.setPosition(self._anchor, QTextCursor.MoveMode.KeepAnchor)
                 cur.removeSelectedText()
         try:
             self._on_picked(rel)
@@ -94,16 +94,16 @@ class FileMentionPopup(QListWidget):
 
     def keyPressEvent(self, e):
         """Up/Down 导航，Enter 选中，Esc 关闭，其他键回传输入框。"""
-        from PyQt5.QtCore import QEvent
+        from PyQt6.QtCore import QEvent
         k = e.key()
-        if k in (Qt.Key_Up, Qt.Key_Down):
+        if k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
             return super().keyPressEvent(e)
-        if k in (Qt.Key_Return, Qt.Key_Enter):
+        if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             it = self.currentItem()
             if it:
                 self._pick(it)
             return
-        if k == Qt.Key_Escape:
+        if k == Qt.Key.Key_Escape:
             self.hide()
             return
         # 其他键转发给输入框（让用户继续输入过滤）
@@ -112,7 +112,7 @@ class FileMentionPopup(QListWidget):
             inp.setFocus()
             # v8.5.x 审查修复：原先 `QApplication_send_event(...) if False else None` 是死代码，
             # 按键被吞、过滤不更新；改为同步 sendEvent 正确转发。
-            from PyQt5.QtWidgets import QApplication
+            from PyQt6.QtWidgets import QApplication
             QApplication.sendEvent(inp, e)
 
 
@@ -155,7 +155,7 @@ class CommandPalette(QDialog):
         for c in self._filtered[:200]:
             tag = "[文件] " if c.get("type") == "file" else ""
             it = QListWidgetItem(tag + c.get("label", ""))
-            it.setData(Qt.UserRole, c)
+            it.setData(Qt.ItemDataRole.UserRole, c)
             self.list.addItem(it)
         if self.list.count() > 0:
             self.list.setCurrentRow(0)
@@ -170,7 +170,7 @@ class CommandPalette(QDialog):
         self._populate()
 
     def _exec(self, item: QListWidgetItem) -> None:
-        c = item.data(Qt.UserRole)
+        c = item.data(Qt.ItemDataRole.UserRole)
         if not c:
             return
         self.accept()
@@ -184,15 +184,15 @@ class CommandPalette(QDialog):
 
     def keyPressEvent(self, e):
         k = e.key()
-        if k in (Qt.Key_Up, Qt.Key_Down):
+        if k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
             self.list.keyPressEvent(e)
             return
-        if k in (Qt.Key_Return, Qt.Key_Enter):
+        if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             it = self.list.currentItem()
             if it:
                 self._exec(it)
             return
-        if k == Qt.Key_Escape:
+        if k == Qt.Key.Key_Escape:
             self.reject()
             return
         super().keyPressEvent(e)
@@ -200,7 +200,7 @@ class CommandPalette(QDialog):
     def selected(self) -> dict | None:
         """对话框关闭后取选中项（file 类用）。"""
         it = self.list.currentItem()
-        return it.data(Qt.UserRole) if it else None
+        return it.data(Qt.ItemDataRole.UserRole) if it else None
 
 
 # ==========================================================================
@@ -232,13 +232,13 @@ def build_checkpoint_menu(parent: QWidget, restore_callback) -> QMenu:
 
 def _do_restore(parent: QWidget, bak_path: str, rel_path: str, restore_callback) -> None:
     """执行恢复：先确认，再回调写回。"""
-    from PyQt5.QtWidgets import QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
     ans = QMessageBox.question(
         parent, "恢复确认",
         f"将把「{rel_path}」恢复到 AI 改动前的版本。\n当前内容会被覆盖（恢复前会自动再做一次快照，可二次回滚）。\n\n确认恢复？",
-        QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
     )
-    if ans != QMessageBox.Yes:
+    if ans != QMessageBox.StandardButton.Yes:
         return
     try:
         restore_callback(bak_path, rel_path)
@@ -280,7 +280,7 @@ class DiffPreviewDialog(QDialog):
     """左右分栏 diff 对比视图。用户点"接受"才落盘，点"拒绝"则取消写入。
 
     用法：dialog = DiffPreviewDialog(parent, rel_path, old_content, new_content)
-         if dialog.exec_() == QDialog.Accepted: ...执行写入...
+         if dialog.exec() == QDialog.DialogCode.Accepted: ...执行写入...
     """
 
     def __init__(self, parent, rel_path: str, old: str, new: str):
@@ -300,7 +300,7 @@ class DiffPreviewDialog(QDialog):
         v.addWidget(lbl)
 
         # 左右分栏
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         left_edit = self._build_diff_view("原始（旧）", self._old, self._new, side="left")
         right_edit = self._build_diff_view("新内容（AI 生成）", self._old, self._new, side="right")
         splitter.addWidget(left_edit)
@@ -310,8 +310,8 @@ class DiffPreviewDialog(QDialog):
 
         # 底部按钮
         bb = QDialogButtonBox()
-        self._btn_accept = bb.addButton("接受并写入", QDialogButtonBox.AcceptRole)
-        self._btn_reject = bb.addButton("拒绝（取消写入）", QDialogButtonBox.RejectRole)
+        self._btn_accept = bb.addButton("接受并写入", QDialogButtonBox.ButtonRole.AcceptRole)
+        self._btn_reject = bb.addButton("拒绝（取消写入）", QDialogButtonBox.ButtonRole.RejectRole)
         self._btn_accept.setStyleSheet("background: #2d7d46; color: white; padding: 6px 16px; font-weight: bold;")
         self._btn_reject.setStyleSheet("padding: 6px 16px;")
         bb.accepted.connect(self.accept)
@@ -341,10 +341,10 @@ class DiffPreviewDialog(QDialog):
         edit = QPlainTextEdit()
         edit.setReadOnly(True)
         font = QFont("Consolas")
-        font.setStyleHint(QFont.Monospace)
+        font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPointSize(10)
         edit.setFont(font)
-        edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
 
         left, right, marks = _diff_lines(old, new)
         lines = left if side == "left" else right
@@ -384,7 +384,7 @@ class VersionRestoreDialog(QDialog):
         self._restore_callback = restore_callback
 
         root = QVBoxLayout(self)
-        split = QSplitter(Qt.Horizontal)
+        split = QSplitter(Qt.Orientation.Horizontal)
         self.file_list = QListWidget()
         self.file_list.setMinimumWidth(250)
         self.file_list.currentRowChanged.connect(self._on_file)
@@ -393,7 +393,7 @@ class VersionRestoreDialog(QDialog):
         self.ver_list.currentRowChanged.connect(self._on_version)
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
-        right = QSplitter(Qt.Vertical)
+        right = QSplitter(Qt.Orientation.Vertical)
         right.addWidget(self.ver_list)
         right.addWidget(self.preview)
         right.setSizes([150, 340])
@@ -430,13 +430,13 @@ class VersionRestoreDialog(QDialog):
             files = []
         if not files:
             it = QListWidgetItem("（无快照记录）")
-            it.setData(Qt.UserRole, None)
+            it.setData(Qt.ItemDataRole.UserRole, None)
             self.file_list.addItem(it)
         else:
             sel_row = 0
             for n, f in enumerate(files):
                 it = QListWidgetItem(f"{f['rel_path']}  ({f['count']}版)")
-                it.setData(Qt.UserRole, f["rel_path"])
+                it.setData(Qt.ItemDataRole.UserRole, f["rel_path"])
                 self.file_list.addItem(it)
                 if select_rel and f["rel_path"] == select_rel:
                     sel_row = n
@@ -447,7 +447,7 @@ class VersionRestoreDialog(QDialog):
 
     def _on_file(self, row):
         it = self.file_list.item(row)
-        rel = it.data(Qt.UserRole) if it else None
+        rel = it.data(Qt.ItemDataRole.UserRole) if it else None
         if not rel:
             return
         from . import checkpoint as ckpt
@@ -460,7 +460,7 @@ class VersionRestoreDialog(QDialog):
         for v in vers:
             label = f"[{v.get('ts', '')}] {ckpt.source_name(v.get('source', 'ai'))}"
             it = QListWidgetItem(label)
-            it.setData(Qt.UserRole, v)
+            it.setData(Qt.ItemDataRole.UserRole, v)
             self.ver_list.addItem(it)
         self.ver_list.blockSignals(False)
         self.preview.clear()
@@ -469,7 +469,7 @@ class VersionRestoreDialog(QDialog):
 
     def _on_version(self, row):
         it = self.ver_list.item(row)
-        v = it.data(Qt.UserRole) if it else None
+        v = it.data(Qt.ItemDataRole.UserRole) if it else None
         if not v:
             return
         try:
@@ -482,7 +482,7 @@ class VersionRestoreDialog(QDialog):
     def _restore(self):
         from . import checkpoint as ckpt
         it = self.ver_list.currentItem()
-        v = it.data(Qt.UserRole) if it else None
+        v = it.data(Qt.ItemDataRole.UserRole) if it else None
         if not v:
             QMessageBox.information(self, "版本回退", "请先选择一个版本。")
             return
@@ -493,8 +493,8 @@ class VersionRestoreDialog(QDialog):
             f"将把「{v.get('rel_path', '?')}」恢复到\n"
             f"[{v.get('ts', '')}] {ckpt.source_name(v.get('source', 'ai'))} 版本。\n"
             f"当前内容会被覆盖（恢复前会自动再做一次快照，可二次回滚）。\n\n确认恢复？",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ans != QMessageBox.Yes:
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
             return
         try:
             self._restore_callback(v["bak_path"], v.get("rel_path", ""))
@@ -523,7 +523,7 @@ class RoundRestoreDialog(QDialog):
         self._on_restored = on_restored
 
         root = QVBoxLayout(self)
-        split = QSplitter(Qt.Horizontal)
+        split = QSplitter(Qt.Orientation.Horizontal)
         self.rb_list = QListWidget()
         self.rb_list.setMinimumWidth(280)
         self.rb_list.itemClicked.connect(self._on_rb_click)
@@ -532,7 +532,7 @@ class RoundRestoreDialog(QDialog):
         self.sess_list.itemClicked.connect(self._on_sess_click)
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
-        right = QSplitter(Qt.Vertical)
+        right = QSplitter(Qt.Orientation.Vertical)
         right.addWidget(self.sess_list)
         right.addWidget(self.detail)
         right.setSizes([160, 300])
@@ -577,12 +577,12 @@ class RoundRestoreDialog(QDialog):
             points = []
         if not points:
             it = QListWidgetItem("（当前轮无回退点）")
-            it.setData(Qt.UserRole, None)
+            it.setData(Qt.ItemDataRole.UserRole, None)
             self.rb_list.addItem(it)
         else:
             for p in points:
                 it = QListWidgetItem(f"#{p['round_no']} {p['tool']} ({p['ts']})")
-                it.setData(Qt.UserRole, p)
+                it.setData(Qt.ItemDataRole.UserRole, p)
                 self.rb_list.addItem(it)
         try:
             sessions = [s for s in snap.list_sessions()
@@ -591,7 +591,7 @@ class RoundRestoreDialog(QDialog):
             sessions = []
         if not sessions:
             it = QListWidgetItem("（无历史任务快照）")
-            it.setData(Qt.UserRole, None)
+            it.setData(Qt.ItemDataRole.UserRole, None)
             self.sess_list.addItem(it)
         else:
             for s in sessions[:30]:
@@ -599,13 +599,13 @@ class RoundRestoreDialog(QDialog):
                 if s.get("size_mb"):
                     label += f" ({s['size_mb']}MB)"
                 it = QListWidgetItem(label)
-                it.setData(Qt.UserRole, s)
+                it.setData(Qt.ItemDataRole.UserRole, s)
                 self.sess_list.addItem(it)
         self.rb_list.blockSignals(False)
         self.sess_list.blockSignals(False)
 
     def _on_rb_click(self, item):
-        p = item.data(Qt.UserRole)
+        p = item.data(Qt.ItemDataRole.UserRole)
         if not p:
             return
         self._round_no = int(p["round_no"])
@@ -615,7 +615,7 @@ class RoundRestoreDialog(QDialog):
             f"涉及文件: {', '.join(p.get('files') or [])}")
 
     def _on_sess_click(self, item):
-        s = item.data(Qt.UserRole)
+        s = item.data(Qt.ItemDataRole.UserRole)
         if not s:
             return
         try:
@@ -680,8 +680,8 @@ class RoundRestoreDialog(QDialog):
         ans = QMessageBox.question(
             self, "恢复确认",
             "恢复将用该会话快照覆盖整个工作区当前状态（不含 backups/data 等）。\n\n"
-            "确认恢复？", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ans != QMessageBox.Yes:
+            "确认恢复？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
             return
         ok, note = snap.restore_session(self._session_rid, self._workspace)
         if ok:
@@ -781,8 +781,8 @@ class RoundRestoreDialog(QDialog):
             self, "删除确认",
             f"删除会话 {sess.get('title') or self._session_rid}？\n\n"
             "快照将被彻底删除（不留回收站）。此操作不可恢复。\n\n确认删除？",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ans != QMessageBox.Yes:
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
             return
         if snap.delete_session(self._session_rid):
             QMessageBox.information(self, "已删除", "会话快照已删除。")

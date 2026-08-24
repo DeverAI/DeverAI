@@ -1,4 +1,4 @@
-"""DeverAI 桌面应用（PyQt5）—— UI 即 Agent 运行地。
+"""DeverAI 桌面应用（PyQt6）—— UI 即 Agent 运行地。
 
 架构：
 - 一切操作本地直连：subprocess 执行命令行、Path 直接读写文件、httpx 直连 LLM。
@@ -13,12 +13,12 @@ import time
 from pathlib import Path
 from queue import Queue, Empty
 
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint
-from PyQt5.QtGui import QColor, QFont, QTextCursor, QKeySequence, QTextCharFormat, QIcon, QPixmap, QPainter
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint
+from PyQt6.QtGui import QColor, QFont, QTextCursor, QKeySequence, QTextCharFormat, QIcon, QPixmap, QPainter, QAction
+from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTabWidget, QPlainTextEdit, QTextEdit, QTextBrowser, QLineEdit, QPushButton, QLabel,
-    QDockWidget, QMessageBox, QMenu, QAction, QDialog, QFileDialog, QFrame,
+    QDockWidget, QMessageBox, QMenu, QDialog, QFileDialog, QFrame,
     QStatusBar, QToolBar, QComboBox, QDialogButtonBox, QFormLayout,
     QSystemTrayIcon, QListWidget, QListWidgetItem, QProgressBar, QStackedWidget,
 )
@@ -68,9 +68,9 @@ class EditorTab:
     def __init__(self, path: str):
         self.path = path
         self.editor = QPlainTextEdit()
-        self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         font = QFont("Consolas")
-        font.setStyleHint(QFont.Monospace)
+        font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPointSize(11)
         self.editor.setFont(font)
         self.editor.setTabStopDistance(4 * 16)
@@ -174,14 +174,14 @@ class EditorWidget(QTabWidget):
     def _bind_completion(self, tab):
         tab.editor.textChanged.connect(lambda: self._on_text_changed(tab))
         tab.editor.keyPressEvent = self._make_key_handler(tab)
-        tab.editor.setContextMenuPolicy(Qt.CustomContextMenu)
+        tab.editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         tab.editor.customContextMenuRequested.connect(
             lambda pos: self._editor_context_menu(tab, pos))
 
     def _make_key_handler(self, tab):
         def handler(e):
             # 1) Tab 接受整段 ghost
-            if e.key() == Qt.Key_Tab and self._accept_ghost(tab):
+            if e.key() == Qt.Key.Key_Tab and self._accept_ghost(tab):
                 return
             # 2) v4：键入补全首字符时消费该字符（ghost 前进，灰字不残留）
             if tab.ghost_start >= 0 and e.text():
@@ -193,16 +193,16 @@ class EditorWidget(QTabWidget):
             if tab.ghost_start >= 0 and e.text():
                 self._clear_ghost(tab)
             # 3) v4 智能键：自动缩进 / Tab 空格 / 成对符号
-            if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._smart_enter(tab)
                 return
-            if e.key() == Qt.Key_Tab:
+            if e.key() == Qt.Key.Key_Tab:
                 tab.editor.textCursor().insertText("    ")
                 return
-            if e.key() == Qt.Key_Backtab:
+            if e.key() == Qt.Key.Key_Backtab:
                 self._smart_dedent(tab)
                 return
-            if e.key() == Qt.Key_Backspace and self._smart_backspace(tab):
+            if e.key() == Qt.Key.Key_Backspace and self._smart_backspace(tab):
                 return
             if e.text() and self._smart_pair(tab, e.text()):
                 return
@@ -223,13 +223,13 @@ class EditorWidget(QTabWidget):
 
     def _smart_dedent(self, tab):
         cur = tab.editor.textCursor()
-        cur.movePosition(QTextCursor.StartOfBlock)
+        cur.movePosition(QTextCursor.MoveOperation.StartOfBlock)
         block_text = cur.block().text()
         n = 0
         while n < 4 and n < len(block_text) and block_text[n] == " ":
             n += 1
         if n:
-            cur.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, n)
+            cur.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, n)
             cur.insertText("")
             tab.editor.setTextCursor(cur)
 
@@ -240,7 +240,7 @@ class EditorWidget(QTabWidget):
         block_text = cur.block().text()
         pos = cur.positionInBlock()
         if pos >= 4 and block_text[:pos].strip() == "":
-            cur.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, 4)
+            cur.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, 4)
             cur.insertText("")
             tab.editor.setTextCursor(cur)
             return True
@@ -258,7 +258,7 @@ class EditorWidget(QTabWidget):
             cur.insertText(ch + sel.replace("\u2029", "\n") + close)
             return True
         cur.insertText(ch + close)
-        cur.movePosition(QTextCursor.Left)
+        cur.movePosition(QTextCursor.MoveOperation.Left)
         tab.editor.setTextCursor(cur)
         return True
 
@@ -280,7 +280,7 @@ class EditorWidget(QTabWidget):
         try:
             cur = tab.editor.textCursor()
             cur.setPosition(tab.ghost_start)
-            cur.setPosition(tab.ghost_end, QTextCursor.KeepAnchor)
+            cur.setPosition(tab.ghost_end, QTextCursor.MoveMode.KeepAnchor)
             cur.insertText(ch)
             tab.editor.setTextCursor(cur)
             tab.ghost_start = tab.ghost_end = -1  # 旧 ghost 已清除
@@ -373,7 +373,7 @@ class EditorWidget(QTabWidget):
             new_end = tab.ghost_end + len(chunk)
             sel = tab.editor.textCursor()
             sel.setPosition(insert_at)
-            sel.setPosition(insert_at + len(chunk), QTextCursor.KeepAnchor)
+            sel.setPosition(insert_at + len(chunk), QTextCursor.MoveMode.KeepAnchor)
             fmt = QTextCharFormat()
             fmt.setForeground(QColor(self._ghost_color()))
             fmt.setFontItalic(True)
@@ -404,7 +404,7 @@ class EditorWidget(QTabWidget):
             # 设置幽灵样式：灰色斜体
             sel = tab.editor.textCursor()
             sel.setPosition(start + 1)
-            sel.setPosition(end - 1, QTextCursor.KeepAnchor)
+            sel.setPosition(end - 1, QTextCursor.MoveMode.KeepAnchor)
             fmt = QTextCharFormat()
             fmt.setForeground(QColor(self._ghost_color()))
             fmt.setFontItalic(True)
@@ -431,7 +431,7 @@ class EditorWidget(QTabWidget):
             body = doc[tab.ghost_start + 1 : tab.ghost_end - 1]
             cur = tab.editor.textCursor()
             cur.setPosition(tab.ghost_start)
-            cur.setPosition(tab.ghost_end, QTextCursor.KeepAnchor)
+            cur.setPosition(tab.ghost_end, QTextCursor.MoveMode.KeepAnchor)
             cur.insertText(body)
             cur.setPosition(tab.ghost_start + len(body))
             tab.editor.setTextCursor(cur)
@@ -461,7 +461,7 @@ class EditorWidget(QTabWidget):
         try:
             cur = tab.editor.textCursor()
             cur.setPosition(start)
-            cur.setPosition(end, QTextCursor.KeepAnchor)
+            cur.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
             cur.insertText("")
         finally:
             tab.ghost_start = tab.ghost_end = -1
@@ -489,7 +489,7 @@ class EditorWidget(QTabWidget):
         menu.addAction("粘贴", lambda: tab.editor.paste())
         menu.addSeparator()
         menu.addAction("全选", lambda: tab.editor.selectAll())
-        menu.exec_(tab.editor.viewport().mapToGlobal(pos))
+        menu.exec(tab.editor.viewport().mapToGlobal(pos))
 
     def _request_ai_action(self, tab, action_name):
         if self.ai_action_requested:
@@ -556,7 +556,7 @@ class EditorWidget(QTabWidget):
         tab = self.tabs[idx]
         if tab.dirty:
             ret = QMessageBox.question(self, "未保存", f"「{tab.path}」未保存，确定关闭？")
-            if ret != QMessageBox.Yes:
+            if ret != QMessageBox.StandardButton.Yes:
                 return
         if self._active is tab:
             self._completion_timer.stop()
@@ -642,7 +642,7 @@ class ChatPanel(QWidget):
         self.suggest_lay.setContentsMargins(8, 6, 8, 6)
         self.suggest_lay.setSpacing(2)
         self.suggest_box.hide()
-        layout.addWidget(self.suggest_box, 0, Qt.AlignTop)
+        layout.addWidget(self.suggest_box, 0, Qt.AlignmentFlag.AlignTop)
 
         # v4：Agent 形态选择（v8 移入输入卡工具条）
         self.mode_combo = QComboBox()
@@ -667,7 +667,7 @@ class ChatPanel(QWidget):
         self.view.document().setDefaultStyleSheet(_CHAT_CSS)
         self.view.setOpenLinks(False)
         self.view.anchorClicked.connect(self._on_anchor)
-        self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._view_ctx)
         self.view.hide()
         layout.addWidget(self.view, 1)
@@ -721,7 +721,7 @@ class ChatPanel(QWidget):
         tb.addWidget(self.stop_btn)
         tb.addWidget(self.send_btn)
         cl.addLayout(tb)
-        layout.addWidget(self.card, 0, Qt.AlignHCenter)
+        layout.addWidget(self.card, 0, Qt.AlignmentFlag.AlignHCenter)
 
         # v8：模型选择弹窗（状态行 + Pilot/Copilot 分段 + 模型列表）
         self.model_popup = ModelPickerPopup(self)
@@ -818,7 +818,7 @@ class ChatPanel(QWidget):
         self.view.append(html)
         if self._streaming:
             self._ai_notes.append(html)
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
 
     def add_expert_card(self, ev: dict):
         """专家卡片：任务摘要 | 模型与负载（默认参数不展示）| 当前状态；单击开详情。"""
@@ -849,7 +849,7 @@ class ChatPanel(QWidget):
         self.view.append(html)
         if self._streaming:
             self._ai_notes.append(html)
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
 
     def note_expert_status(self, ev: dict):
         eid = ev.get("expert_id", "")
@@ -888,7 +888,7 @@ class ChatPanel(QWidget):
         self.view.append(html)
         if self._streaming:
             self._ai_notes.append(html)
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
 
     def add_copilot_card(self, note: str, kind: str = "block"):
         _border = self._c('err', '#ef4444')
@@ -898,7 +898,7 @@ class ChatPanel(QWidget):
         self.view.append(html)
         if self._streaming:
             self._ai_notes.append(html)
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
 
     # ---- v4 引用 ----
     def add_quote(self, label: str, content: str):
@@ -913,12 +913,12 @@ class ChatPanel(QWidget):
         for i, q in enumerate(self._quotes):
             preview = q["content"][:60].replace("\n", " ⏎ ")
             it = QListWidgetItem(f"[{q['label']}] {preview}  （双击移除）")
-            it.setData(Qt.UserRole, i)
+            it.setData(Qt.ItemDataRole.UserRole, i)
             self.quote_list.addItem(it)
         self.quote_list.setVisible(bool(self._quotes))
 
     def _remove_quote(self, item):
-        idx = item.data(Qt.UserRole)
+        idx = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(idx, int) and 0 <= idx < len(self._quotes):
             self._quotes.pop(idx)
             self._refresh_quotes()
@@ -967,11 +967,11 @@ class ChatPanel(QWidget):
             body = _esc(m["raw"]) if m.get("source_mode") else md_to_html(m["raw"])
             m["source_mode"] = not m.get("source_mode")
             self.view.append(f'<div class="aitext">{body}</div>')
-            self.view.moveCursor(QTextCursor.End)
+            self.view.moveCursor(QTextCursor.MoveOperation.End)
             return
         c = self.view.textCursor()
         c.setPosition(m["start"])
-        c.setPosition(m["end"], QTextCursor.KeepAnchor)
+        c.setPosition(m["end"], QTextCursor.MoveMode.KeepAnchor)
         if m.get("source_mode"):
             c.insertHtml(md_to_html(m["raw"]))
             m["source_mode"] = False
@@ -992,7 +992,7 @@ class ChatPanel(QWidget):
                            lambda: self.add_quote("对话选区", sel.replace("\u2029", "\n")))
         else:
             menu.addAction("（先选中内容再引用）").setEnabled(False)
-        menu.exec_(self.view.mapToGlobal(pos))
+        menu.exec(self.view.mapToGlobal(pos))
 
     # ---- v4 守护/守门卡片 ----
     def add_guard(self, ok: bool, note: str):
@@ -1000,7 +1000,7 @@ class ChatPanel(QWidget):
         self.view.append(
             f'<div class="guard">规则守护 {mark}：{_esc(note or "对话正常，未绕过限制")}</div>'
         )
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
 
     def add_gate_note(self, stats: dict, reason: str, banned: list):
         parts = [f"上下文守门：保留 {stats.get('kept', 0)}/{stats.get('total', 0)} 块"]
@@ -1041,22 +1041,22 @@ class ChatPanel(QWidget):
             "source_mode": False, "has_tools": False,
         }
         c = self.view.textCursor()
-        c.movePosition(QTextCursor.End)
+        c.movePosition(QTextCursor.MoveOperation.End)
         c.insertHtml(f'<div class="ai"><div class="aihead">● {_esc(title)}</div></div>')
         # 用插入用的副本光标记录边界，不依赖用户可见光标（流式期间点击聊天区不影响）
         self._ai_start = c.position()
         self._ai_end = self._ai_start
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
 
     def append_ai(self, text: str):
         if self._ai_block is None and self._ai_start < 0:
             self.new_ai()
         self._ai_buf += str(text or "")
         c = self.view.textCursor()
-        c.movePosition(QTextCursor.End)
+        c.movePosition(QTextCursor.MoveOperation.End)
         c.insertHtml(_esc(text).replace("\n", "<br>"))
         self._ai_end = c.position()
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
         self.view.ensureCursorVisible()
 
     def finish_ai(self):
@@ -1073,7 +1073,7 @@ class ChatPanel(QWidget):
             html = "".join(self._ai_notes) + md_to_html(self._ai_buf)
             c = self.view.textCursor()
             c.setPosition(self._ai_start)
-            c.setPosition(self._ai_end, QTextCursor.KeepAnchor)
+            c.setPosition(self._ai_end, QTextCursor.MoveMode.KeepAnchor)
             c.insertHtml(html)
             if m is not None:
                 m["start"] = self._ai_start
@@ -1084,7 +1084,7 @@ class ChatPanel(QWidget):
             f'<a href="act:toggle:{mid}">源码/预览</a></div>'
         )
         self._streaming = False
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
         self.view.ensureCursorVisible()
 
     def ai_note(self, text: str):
@@ -1105,25 +1105,25 @@ class ChatPanel(QWidget):
             f'<div class="toolargs">{_esc(arg_str)}</div>'
             f'<div class="toolout"></div></div>'
         )
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
 
     def tool_output(self, call_id, line):
         c = self.view.textCursor()
-        c.movePosition(QTextCursor.End)
+        c.movePosition(QTextCursor.MoveOperation.End)
         c.insertHtml(f'<div class="tooloutline">{_esc(line)}</div>')
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
         self.view.ensureCursorVisible()
 
     def finish_tool(self, call_id, ok, output, meta=None):
         c = self.view.textCursor()
-        c.movePosition(QTextCursor.End)
+        c.movePosition(QTextCursor.MoveOperation.End)
         status = "✓ 完成" if ok else "× 失败"
         cls = "done" if ok else "err"
         c.insertHtml(
             f'<div class="tool {cls}"><b>{status}</b></div>'
             + (f'<div class="toolout">{_esc(output)[:6000]}</div>' if output else "")
         )
-        self.view.moveCursor(QTextCursor.End)
+        self.view.moveCursor(QTextCursor.MoveOperation.End)
         self.view.ensureCursorVisible()
 
     def sub_event(self, label, ev):
@@ -1160,7 +1160,7 @@ class ChatPanel(QWidget):
         """将文本写入输入框并聚焦（用于采纳建议）。"""
         self.inp.setPlainText(str(text or ""))
         cur = self.inp.textCursor()
-        cur.movePosition(QTextCursor.End)
+        cur.movePosition(QTextCursor.MoveOperation.End)
         self.inp.setTextCursor(cur)
         self.inp.setFocus()
 
@@ -1331,7 +1331,7 @@ class ExpertDetailDialog(QDialog):
         layout = QVBoxLayout(self)
         self.crumb = QLabel("专家团")
         layout.addWidget(self.crumb)
-        from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
+        from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         root = QTreeWidgetItem(self.tree, ["专家团"])
@@ -1344,7 +1344,7 @@ class ExpertDetailDialog(QDialog):
         self.tree.expandAll()
         self.tree.currentItemChanged.connect(self._on_sel)
         layout.addWidget(self.tree, 1)
-        btn = QDialogButtonBox(QDialogButtonBox.Close)
+        btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         btn.rejected.connect(self.reject)
         btn.clicked.connect(self.accept)
         layout.addWidget(btn)
@@ -1352,7 +1352,7 @@ class ExpertDetailDialog(QDialog):
             self.tree.setCurrentItem(self._items[focus_eid])
 
     def _fill(self, node, e: dict):
-        from PyQt5.QtWidgets import QTreeWidgetItem
+        from PyQt6.QtWidgets import QTreeWidgetItem
         lvl = {"full": "全展示", "partial": "部分展示", "minimal": "少量展示"}.get(
             e.get("display_level", "full"), "全展示")
         rows = [
@@ -1392,7 +1392,7 @@ class LockDialog(QDialog):
         self.resize(620, 320)
         self.chat = chat
         layout = QVBoxLayout(self)
-        from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
+        from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["资源", "持有者", "已持锁(s)", "剩余(s)"])
         self._rows = {}
@@ -1403,7 +1403,7 @@ class LockDialog(QDialog):
         self.unlock_btn.clicked.connect(self._force_unlock)
         row.addWidget(self.unlock_btn)
         row.addStretch(1)
-        btn = QDialogButtonBox(QDialogButtonBox.Close)
+        btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         btn.clicked.connect(self.accept)
         row.addWidget(btn)
         layout.addLayout(row)
@@ -1411,7 +1411,7 @@ class LockDialog(QDialog):
 
     def refresh(self):
         self.tree.clear()
-        from PyQt5.QtWidgets import QTreeWidgetItem
+        from PyQt6.QtWidgets import QTreeWidgetItem
         self._rows = {}
         for s in get_locks().snapshot():
             it = QTreeWidgetItem(self.tree, [
@@ -1447,7 +1447,7 @@ class LockDialog(QDialog):
 class SleepDialog(QDialog):
     def __init__(self, goal: str, action: str, parent=None, on_before_power=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.CustomizeWindowHint)
         self.setWindowTitle("肝完睡觉模式")
         self.setFixedSize(420, 240)
         self.action = action
@@ -1456,7 +1456,7 @@ class SleepDialog(QDialog):
         self.on_before_power = on_before_power
         layout = QVBoxLayout(self)
         title = QLabel("任务已完成，5 分钟后将关机/休眠")
-        title.setAlignment(Qt.AlignCenter)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         _pal = {}
         if parent is not None and hasattr(parent, "cfg"):
             _pal = themes_mod.get_palette(getattr(parent.cfg, "theme", "obsidian"))
@@ -1467,10 +1467,10 @@ class SleepDialog(QDialog):
         _muted_c = _pal.get("muted", "#94a3b8")
         title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {_text_c};")
         self.time = QLabel("05:00")
-        self.time.setAlignment(Qt.AlignCenter)
+        self.time.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time.setStyleSheet(f"font-size: 60px; font-weight: bold; color: {_accent_c};")
         goal_lbl = QLabel(f"目标：{goal}")
-        goal_lbl.setAlignment(Qt.AlignCenter)
+        goal_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         goal_lbl.setStyleSheet(f"color: {_muted_c};")
         row = QHBoxLayout()
         cancel = QPushButton("我还在，取消")
@@ -1586,9 +1586,9 @@ class SelectionActionDialog(QDialog):
         self.out.setReadOnly(True)
         layout.addWidget(self.out, 1)
         btns = QDialogButtonBox()
-        self.btn_run = btns.addButton("运行", QDialogButtonBox.ActionRole)
-        self.btn_apply = btns.addButton("应用到代码", QDialogButtonBox.ActionRole)
-        self.btn_close = btns.addButton("关闭", QDialogButtonBox.RejectRole)
+        self.btn_run = btns.addButton("运行", QDialogButtonBox.ButtonRole.ActionRole)
+        self.btn_apply = btns.addButton("应用到代码", QDialogButtonBox.ButtonRole.ActionRole)
+        self.btn_close = btns.addButton("关闭", QDialogButtonBox.ButtonRole.RejectRole)
         layout.addWidget(btns)
         self.btn_run.clicked.connect(self._run)
         self.btn_apply.clicked.connect(self._apply)
@@ -1627,9 +1627,9 @@ class SelectionActionDialog(QDialog):
     def _on_delta(self, text):
         self.result_text += text
         c = self.out.textCursor()
-        c.movePosition(QTextCursor.End)
+        c.movePosition(QTextCursor.MoveOperation.End)
         c.insertText(text)
-        self.out.moveCursor(QTextCursor.End)
+        self.out.moveCursor(QTextCursor.MoveOperation.End)
         self.out.ensureCursorVisible()
 
     def _on_done(self):
@@ -1666,18 +1666,18 @@ def _draw_tray_icon() -> QIcon:
     except Exception:
         _accent = QColor("#3b82f6")
     pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
+    pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setBrush(_accent)
-    p.setPen(Qt.NoPen)
+    p.setPen(Qt.PenStyle.NoPen)
     p.drawRoundedRect(4, 4, 56, 56, 14, 14)
     p.setPen(QColor("#ffffff"))
     f = QFont("Segoe UI")
     f.setPointSize(30)
     f.setBold(True)
     p.setFont(f)
-    p.drawText(pm.rect(), Qt.AlignCenter, "D")
+    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "D")
     p.end()
     return QIcon(pm)
 
@@ -1755,11 +1755,11 @@ class DeverAIApp(QMainWindow):
         # v8：右侧图标条（Quest 风格面板管理，替代旧左活动栏）
         self.activitybar = QToolBar("面板栏", self)
         self.activitybar.setObjectName("rightstrip")
-        self.activitybar.setOrientation(Qt.Vertical)
+        self.activitybar.setOrientation(Qt.Orientation.Vertical)
         self.activitybar.setMovable(False)
         self.activitybar.setFixedWidth(40)
-        self.activitybar.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.addToolBar(Qt.RightToolBarArea, self.activitybar)
+        self.activitybar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.addToolBar(Qt.ToolBarArea.RightToolBarArea, self.activitybar)
         self.act_sum = self.activitybar.addAction(svg_icon("chart"), "")
         self.act_files = self.activitybar.addAction(svg_icon("folder"), "")
         self.act_term = self.activitybar.addAction(svg_icon("terminal"), "")
@@ -1837,7 +1837,7 @@ class DeverAIApp(QMainWindow):
         # v8：Pannel 右栏（可左右拖动改宽，dock 分割条原生支持）
         self.dock_panel = QDockWidget("Summary", self)
         self.dock_panel.setObjectName("questpaneldock")
-        self.dock_panel.setFeatures(QDockWidget.DockWidgetMovable)
+        self.dock_panel.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable)
         self.panel_tabs = QTabWidget()
         self.panel_tabs.addTab(self.summary_panel, "概览")
         self.panel_tabs.addTab(self.file_tree, "文件")
@@ -1861,7 +1861,7 @@ class DeverAIApp(QMainWindow):
         pl.addWidget(self.guard_banner)
         pl.addWidget(self.panel_tabs, 1)
         self.dock_panel.setWidget(panel_host)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_panel)
         self.dock_panel.setMinimumWidth(300)
         self.panel_tabs.currentChanged.connect(self._on_panel_tab)
         # v4：终端选段引用（信号由 panels T10 提供，缺失时安全跳过）
@@ -1888,7 +1888,7 @@ class DeverAIApp(QMainWindow):
         self.workspace_stack.addWidget(self.chat)
         self.workspace_stack.addWidget(self.editors)
         self.workspace_stack.addWidget(self.trace_panel)
-        central = QSplitter(Qt.Horizontal)
+        central = QSplitter(Qt.Orientation.Horizontal)
         central.setObjectName("workspaceSplitter")
         central.addWidget(self.quest_sidebar)
         central.addWidget(self.workspace_stack)
@@ -1903,7 +1903,7 @@ class DeverAIApp(QMainWindow):
         # 参考图默认展示 Summary；action、tab 与 dock 同步。
         self.panel_tabs.setCurrentIndex(0)
         self.act_sum.setChecked(True)
-        self.resizeDocks([self.dock_panel], [350], Qt.Horizontal)
+        self.resizeDocks([self.dock_panel], [350], Qt.Orientation.Horizontal)
 
         self.setStatusBar(QStatusBar())
         # v4：加载进度条（busy 态不定长滚动）
@@ -1918,7 +1918,7 @@ class DeverAIApp(QMainWindow):
         self.lock_btn.setIcon(svg_icon("lock"))
         self.lock_btn.setFlat(True)
         self.lock_btn.setToolTip("租约锁状态（点开查看/强制解锁）")
-        self.lock_btn.clicked.connect(lambda: LockDialog(self.chat, self).exec_())
+        self.lock_btn.clicked.connect(lambda: LockDialog(self.chat, self).exec())
         self.statusBar().addPermanentWidget(self.lock_btn)
         # v4：同步队列状态常驻
         self.sync_lbl = QLabel("同步队列 空闲")
@@ -1943,7 +1943,7 @@ class DeverAIApp(QMainWindow):
         self._drift_check_startup()
 
     def _chat_key(self, e):
-        if e.key() == Qt.Key_Return and (e.modifiers() & Qt.ControlModifier):
+        if e.key() == Qt.Key.Key_Return and (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self._send()
             return
         QPlainTextEdit.keyPressEvent(self.chat.inp, e)
@@ -2028,7 +2028,7 @@ class DeverAIApp(QMainWindow):
         cmds.append({"type": "action", "label": "版本回退（快照对话框）",
                      "data": self._open_version_restore})
         pal = CommandPalette(self, cmds)
-        if pal.exec_() != QDialog.Accepted:
+        if pal.exec() != QDialog.DialogCode.Accepted:
             return
         sel = pal.selected()
         if sel and sel.get("type") == "file":
@@ -2049,13 +2049,13 @@ class DeverAIApp(QMainWindow):
     def _open_checkpoint_restore(self):
         """弹出 checkpoint 恢复菜单。"""
         menu = build_checkpoint_menu(self, self._restore_checkpoint_cb)
-        menu.exec_(self.chat.view.viewport().mapToGlobal(self.chat.view.rect().center()))
+        menu.exec(self.chat.view.viewport().mapToGlobal(self.chat.view.rect().center()))
 
     def _open_version_restore(self):
         """v8.2：版本回退对话框（按文件选择历史版本恢复）。"""
         from .ide_extras import VersionRestoreDialog
         dlg = VersionRestoreDialog(self, self._restore_checkpoint_cb)
-        dlg.exec_()
+        dlg.exec()
 
     def _restore_checkpoint_cb(self, bak_path: str, rel_path: str):
         """实际恢复：读 bak 内容写回原文件（恢复前再做一次快照防后悔）。"""
@@ -2097,7 +2097,7 @@ class DeverAIApp(QMainWindow):
         act_open = QAction("打开文件…", self)
         act_open.triggered.connect(lambda: self._open_dialog())
         act_save = QAction("保存 (Ctrl+S)", self)
-        act_save.setShortcut(QKeySequence.Save)
+        act_save.setShortcut(QKeySequence.StandardKey.Save)
         act_save.triggered.connect(lambda: self.editors.save_current())
         # v6.3 命令面板 Ctrl+Shift+P
         act_palette = QAction("命令面板… (Ctrl+Shift+P)", self)
@@ -2106,9 +2106,14 @@ class DeverAIApp(QMainWindow):
         fm.addAction(act_open)
         fm.addAction(act_save)
         fm.addAction(act_palette)
-        fm.addAction(QAction("另存为…", self, triggered=lambda: self.editors.save_as()))
+        # v8.14：PyQt6 不支持构造时以信号关键字连接，改为显式 connect
+        act_saveas = QAction("另存为…", self)
+        act_saveas.triggered.connect(lambda: self.editors.save_as())
+        fm.addAction(act_saveas)
         fm.addSeparator()
-        fm.addAction(QAction("退出", self, triggered=self._quit))
+        act_quit = QAction("退出", self)
+        act_quit.triggered.connect(self._quit)
+        fm.addAction(act_quit)
 
         am = m.addMenu("AI")
         act_ai = QAction("AI 处理选区… (Ctrl+K)", self)
@@ -2120,9 +2125,13 @@ class DeverAIApp(QMainWindow):
         act_clear.triggered.connect(self._clear_history)
         am.addAction(act_ai)
         am.addSeparator()
-        am.addAction(QAction("版本回退（快照）…", self, triggered=self._open_version_restore))
+        act_ver = QAction("版本回退（快照）…", self)
+        act_ver.triggered.connect(self._open_version_restore)
+        am.addAction(act_ver)
         am.addAction(act_set)
-        am.addAction(QAction("模型注册表…", self, triggered=self._open_settings))
+        act_reg = QAction("模型注册表…", self)
+        act_reg.triggered.connect(self._open_settings)
+        am.addAction(act_reg)
         am.addAction(act_clear)
 
         vm = m.addMenu("工作区")
@@ -2193,17 +2202,17 @@ class DeverAIApp(QMainWindow):
 
     def _show_from_tray(self):
         self.show()
-        self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
         self.raise_()
         self.activateWindow()
 
     def _tray_activated(self, reason):
-        if reason == QSystemTrayIcon.Trigger:  # 单击：切换显示
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:  # 单击：切换显示
             if self.isVisible():
                 self.hide()
             else:
                 self._show_from_tray()
-        elif reason == QSystemTrayIcon.DoubleClick:
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self._show_from_tray()
 
     def _quit(self):
@@ -2261,7 +2270,7 @@ class DeverAIApp(QMainWindow):
                 })
 
     def _open_expert_detail(self, eid: str):
-        ExpertDetailDialog(self.chat._experts, focus_eid=eid, parent=self).exec_()
+        ExpertDetailDialog(self.chat._experts, focus_eid=eid, parent=self).exec()
 
     def _on_sync_flushed(self, ok, message):
         self.statusBar().showMessage(("✓ 同步成功" if ok else f"同步未成功: {message}"), 5000)
@@ -2430,12 +2439,12 @@ class DeverAIApp(QMainWindow):
             QMessageBox.information(self, "提示", "请先在编辑器中选中代码")
             return
         dlg = SelectionActionDialog(self.cfg, tab, action_name, code, self)
-        dlg.exec_()
+        dlg.exec()
 
     def _open_settings(self):
         was_traffic = bool(self.cfg.traffic_mode)
         dlg = SettingsDialog(self.cfg, self)
-        if dlg.exec_():
+        if dlg.exec():
             self._init_workspace()
             self._update_statusbar()
             # v8：设置对话框可能改写 model/traffic/lowram/sleep/serial，回同步状态载体
@@ -2642,13 +2651,13 @@ class DeverAIApp(QMainWindow):
             from .ide_extras import RoundRestoreDialog
             dlg = RoundRestoreDialog(self, workspace=getattr(self.cfg, "workspace", "") or "",
                                      on_restored=self._reload_workspace_after_restore)
-            dlg.exec_()
+            dlg.exec()
         except Exception:
             pass
         # 文件级版本回退
         try:
             dlg2 = VersionRestoreDialog(self, self._restore_checkpoint_cb)
-            dlg2.exec_()
+            dlg2.exec()
         except Exception:
             pass
 
@@ -2667,8 +2676,8 @@ class DeverAIApp(QMainWindow):
                 self, "回退确认",
                 f"将工作区文件恢复到「{target.get('tool') or '工具调用'}」"
                 f"（第 {target.get('round_no')} 次调用，{target.get('ts')}）之前？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if ans != QMessageBox.Yes:
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
                 return
             ok, note = _snap.restore_rollback_point(
                 round_id, int(target.get("round_no") or 0),
@@ -3111,13 +3120,13 @@ class DeverAIApp(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("需要确认操作")
         box.setText(f"AI 请求执行操作：\n\n{summary}\n\n是否允许？")
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        self._schedule_auto_decision(lambda: box.done(QMessageBox.Yes))
-        ret = box.exec_()
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        self._schedule_auto_decision(lambda: box.done(QMessageBox.StandardButton.Yes))
+        ret = box.exec()
         if self._auto_decision_timer is not None:
             self._auto_decision_timer.stop()
             self._auto_decision_timer = None
-        self.agent_thread.resolve_approval(call_id, ret == QMessageBox.Yes)
+        self.agent_thread.resolve_approval(call_id, ret == QMessageBox.StandardButton.Yes)
 
     def _show_diff_preview(self, ev):
         """v6.4 内联差异预览：弹 DiffPreviewDialog，用户接受才允许写入。"""
@@ -3128,7 +3137,7 @@ class DeverAIApp(QMainWindow):
         try:
             dlg = DiffPreviewDialog(self, rel, old, new)
             self._schedule_auto_decision(lambda: dlg.accept())
-            accepted = dlg.exec_() == QDialog.Accepted
+            accepted = dlg.exec() == QDialog.DialogCode.Accepted
             if self._auto_decision_timer is not None:
                 self._auto_decision_timer.stop()
                 self._auto_decision_timer = None
@@ -3144,7 +3153,7 @@ class DeverAIApp(QMainWindow):
         final_text = getattr(result, "text", "") or ""
         if modes_mod.goal_reached(self.cfg.sleep_goal, final_text):
             SleepDialog(self.cfg.sleep_goal, self.cfg.sleep_action, self,
-                        on_before_power=lambda reason: self._drift_push(reason, wait_ms=10000)).exec_()
+                        on_before_power=lambda reason: self._drift_push(reason, wait_ms=10000)).exec()
 
     def set_history(self, history):
         self.history = list(history)
@@ -3274,10 +3283,10 @@ class DeverAIApp(QMainWindow):
         box.setInformativeText(
             "漂移退出：把当前工作状态推送到服务器，之后可在云端/手机继续运算、编辑；\n"
             "普通退出：仅保存并退出，不进入云端继续。")
-        drift_btn = box.addButton("算力漂移退出", QMessageBox.AcceptRole)
-        normal_btn = box.addButton("普通退出", QMessageBox.RejectRole)
+        drift_btn = box.addButton("算力漂移退出", QMessageBox.ButtonRole.AcceptRole)
+        normal_btn = box.addButton("普通退出", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(normal_btn)
-        box.exec_()
+        box.exec()
         return box.clickedButton() is drift_btn
 
     def _drift_check_startup(self):
@@ -3321,10 +3330,10 @@ class DeverAIApp(QMainWindow):
             "是否将服务器上的算力漂移回本地？\n"
             "「漂移回本地」会合并云端产出并解除只读；\n"
             "「保持锁定」则继续只读，稍后手动处理。")
-        back_btn = box.addButton("漂移回本地", QMessageBox.AcceptRole)
-        lock_btn = box.addButton("保持锁定", QMessageBox.RejectRole)
+        back_btn = box.addButton("漂移回本地", QMessageBox.ButtonRole.AcceptRole)
+        lock_btn = box.addButton("保持锁定", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(back_btn)
-        box.exec_()
+        box.exec()
         if box.clickedButton() is back_btn:
             self._do_drift_back()
 
@@ -3368,12 +3377,12 @@ class DeverAIApp(QMainWindow):
             ret = QMessageBox.question(
                 self, "未保存的文件",
                 f"{len(dirty)} 个文件未保存，关闭将丢失修改：\n" + "\n".join(dirty[:5]),
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
             )
-            if ret == QMessageBox.Cancel:
+            if ret == QMessageBox.StandardButton.Cancel:
                 e.ignore()
                 return
-            if ret == QMessageBox.Save:
+            if ret == QMessageBox.StandardButton.Save:
                 for t in list(self.editors.tabs):
                     if t.dirty:
                         self.editors.setCurrentWidget(t.editor)
@@ -3460,8 +3469,6 @@ class DeverAIApp(QMainWindow):
 def main():
     # v6.1 修复：高 DPI 缩放。不开启时 Windows 高分屏按物理 96dpi 渲染，
     # 全局字体/控件偏小、布局显窄（必须在 QApplication 创建前设置）
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     # 全局基础字体（QSS 未覆盖的控件也随此尺寸，10pt ≈ 13px@96dpi）
@@ -3472,4 +3479,4 @@ def main():
     if (getattr(win.cfg, "ENABLE_TRAY", True) and win.tray is not None
             and getattr(win.cfg, "minimize_to_tray", False)):
         app.setQuitOnLastWindowClosed(False)
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

@@ -6,13 +6,13 @@ import threading
 from dataclasses import asdict
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QPushButton,
     QCheckBox, QSpinBox, QDoubleSpinBox, QFileDialog, QLabel, QTabWidget,
     QWidget, QMessageBox, QGroupBox, QScrollArea, QComboBox, QColorDialog,
-    QListWidget, QListWidgetItem, QPlainTextEdit,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QFrame,
 )
 
 from . import sync as sync_mod
@@ -141,7 +141,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(subtitle)
         tabs = QTabWidget()
         tabs.setObjectName("settingsTabs")
-        tabs.setTabPosition(QTabWidget.West)
+        tabs.setTabPosition(QTabWidget.TabPosition.West)
         tabs.setDocumentMode(True)
         self.tabs = tabs
 
@@ -237,7 +237,7 @@ class SettingsDialog(QDialog):
         page = QWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         body = QWidget()
         v = QVBoxLayout(body)
 
@@ -252,7 +252,7 @@ class SettingsDialog(QDialog):
         mf.addRow("快速选择:", provider_row)
         self.ed_base = QLineEdit()
         self.ed_key = QLineEdit()
-        self.ed_key.setEchoMode(QLineEdit.Password)
+        self.ed_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.ed_model = QLineEdit()
         self.ed_temp = QDoubleSpinBox()
         self.ed_temp.setRange(0.0, 2.0)
@@ -344,9 +344,9 @@ class SettingsDialog(QDialog):
         self.ed_sync_url = QLineEdit()
         self.ed_sync_url.setPlaceholderText("http://你的服务器:8765")
         self.ed_sync_pw = QLineEdit()
-        self.ed_sync_pw.setEchoMode(QLineEdit.Password)
+        self.ed_sync_pw.setEchoMode(QLineEdit.EchoMode.Password)
         self.ed_sync_token = QLineEdit()
-        self.ed_sync_token.setEchoMode(QLineEdit.Password)
+        self.ed_sync_token.setEchoMode(QLineEdit.EchoMode.Password)
         self.ed_sync_token.setPlaceholderText("服务器环境变量 SYNC_TOKEN 一致（未设置留空）")
         sf.addRow("同步服务器", self.ed_sync_url)
         sf.addRow("加密口令", self.ed_sync_pw)
@@ -397,7 +397,7 @@ class SettingsDialog(QDialog):
         page = QWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         body = QWidget()
         v = QVBoxLayout(body)
         v.addWidget(QLabel("Skills（内置技能，Agent 默认可用）"))
@@ -447,7 +447,7 @@ class SettingsDialog(QDialog):
         self.ed_search_url = QLineEdit()
         self.ed_search_url.setPlaceholderText("付费搜索 API 地址（留空 = DuckDuckGo 免费通道）")
         self.ed_search_key = QLineEdit()
-        self.ed_search_key.setEchoMode(QLineEdit.Password)
+        self.ed_search_key.setEchoMode(QLineEdit.EchoMode.Password)
         f.addRow("搜索 API URL", self.ed_search_url)
         f.addRow("搜索 API Key", self.ed_search_key)
         v.addWidget(g)
@@ -634,7 +634,7 @@ class SettingsDialog(QDialog):
         self.m_url = QLineEdit()
         self.m_url.setPlaceholderText("留空 = 用全局 API Base")
         self.m_key = QLineEdit()
-        self.m_key.setEchoMode(QLineEdit.Password)
+        self.m_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.m_key.setPlaceholderText("留空 = 用全局 API Key")
         self.m_ctx = QSpinBox()
         self.m_ctx.setRange(1024, 2000000)
@@ -736,7 +736,7 @@ class SettingsDialog(QDialog):
             meta.setStyleSheet("font-size: 11px;")
             v.addWidget(meta)
             it = QListWidgetItem()
-            it.setData(Qt.UserRole, m.id)
+            it.setData(Qt.ItemDataRole.UserRole, m.id)
             it.setSizeHint(w.sizeHint())
             self.models_list.addItem(it)
             self.models_list.setItemWidget(it, w)
@@ -749,7 +749,7 @@ class SettingsDialog(QDialog):
 
     def _current_model_id(self) -> str:
         it = self.models_list.currentItem()
-        return it.data(Qt.UserRole) if it is not None else ""
+        return it.data(Qt.ItemDataRole.UserRole) if it is not None else ""
 
     def _models_fill(self):
         m = get_model(self._current_model_id())
@@ -912,7 +912,7 @@ class SettingsDialog(QDialog):
         if not mid:
             return
         if QMessageBox.question(self, "删除模型",
-                                f"从注册表移除 {mid}？") != QMessageBox.Yes:
+                                f"从注册表移除 {mid}？") != QMessageBox.StandardButton.Yes:
             return
         delete_model(mid)
         self._models_refresh()

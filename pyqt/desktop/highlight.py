@@ -1,8 +1,8 @@
 """轻量语法高亮器：支持 Python / JS/TS / JSON / YAML / HTML / CSS / Markdown / Shell。
 用于编辑器 QPlainTextEdit。基于 QSyntaxHighlighter，零第三方依赖。
 """
-from PyQt5.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
-from PyQt5.QtCore import QRegularExpression
+from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
+from PyQt6.QtCore import QRegularExpression
 
 KEYWORDS = {
     "python": {
@@ -94,7 +94,7 @@ class BaseHighlighter(QSyntaxHighlighter):
             fmt = QTextCharFormat()
             fmt.setForeground(QColor(color))
             if kind in ("kw", "builtins"):
-                fmt.setFontWeight(QFont.Bold)
+                fmt.setFontWeight(QFont.Weight.Bold)
             try:
                 rx = QRegularExpression(pattern)
             except Exception:

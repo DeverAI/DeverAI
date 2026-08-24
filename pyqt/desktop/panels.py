@@ -1,4 +1,4 @@
-"""桌面面板：文件树 / 资产银行 / 终端。PyQt5。
+"""桌面面板：文件树 / 资产银行 / 终端。PyQt6。
 文件树懒加载（展开时读取子目录），双击打开文件（回调交给主窗口）。
 """
 import html
@@ -10,9 +10,9 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer, QSize
-from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer, QSize
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
     QListWidget, QListWidgetItem, QPlainTextEdit, QLineEdit, QPushButton,
     QMenu, QMessageBox, QInputDialog, QLabel, QSplitter, QTextBrowser,
@@ -53,7 +53,7 @@ class FileTree(QTreeWidget):
         super().__init__(parent)
         self.workspace = ""
         self.setHeaderHidden(True)
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._ctx_menu)
         self.itemDoubleClicked.connect(self._on_double_click)
         self.itemExpanded.connect(self._on_expand)
@@ -67,8 +67,8 @@ class FileTree(QTreeWidget):
                 ["尚未选择工作区（菜单「工作区 → 选择工作区目录…」）"]))
             return
         root_item = QTreeWidgetItem(["[目录] " + (Path(path).name or path)])
-        root_item.setData(0, Qt.UserRole, "")
-        root_item.setData(0, Qt.UserRole + 1, True)  # is_dir
+        root_item.setData(0, Qt.ItemDataRole.UserRole, "")
+        root_item.setData(0, Qt.ItemDataRole.UserRole + 1, True)  # is_dir
         root_item.setIcon(0, svg_icon("folder-arrow-down", 14))
         self.addTopLevelItem(root_item)
         loading = QTreeWidgetItem(["加载中…"])
@@ -96,15 +96,15 @@ class FileTree(QTreeWidget):
             rel_child = f"{rel}/{p.name}" if rel else p.name
             label = ("[目录] " if p.is_dir() else "") + p.name
             node = QTreeWidgetItem([label])
-            node.setData(0, Qt.UserRole, rel_child)
-            node.setData(0, Qt.UserRole + 1, p.is_dir())
+            node.setData(0, Qt.ItemDataRole.UserRole, rel_child)
+            node.setData(0, Qt.ItemDataRole.UserRole + 1, p.is_dir())
             # v7：SVG图标替代文本标记
             if p.is_dir():
                 node.setIcon(0, svg_icon("folder-arrow-down", 14))
             else:
                 node.setIcon(0, svg_icon(_file_icon_name(p.name), 14))
             if p.is_dir():
-                node.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
+                node.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
             item.addChild(node)
             shown += 1
         if shown == 0:
@@ -112,13 +112,13 @@ class FileTree(QTreeWidget):
 
     def _on_expand(self, item: QTreeWidgetItem):
         # 展开时无条件重载子目录（懒加载深层目录）
-        if item.data(0, Qt.UserRole + 1):
-            rel = item.data(0, Qt.UserRole) or ""
+        if item.data(0, Qt.ItemDataRole.UserRole + 1):
+            rel = item.data(0, Qt.ItemDataRole.UserRole) or ""
             self._load_children(item, rel)
 
     def _on_double_click(self, item: QTreeWidgetItem, _col):
-        rel = item.data(0, Qt.UserRole)
-        is_dir = item.data(0, Qt.UserRole + 1)
+        rel = item.data(0, Qt.ItemDataRole.UserRole)
+        is_dir = item.data(0, Qt.ItemDataRole.UserRole + 1)
         if rel is not None and not is_dir:
             self.file_activated.emit(rel)
 
@@ -158,8 +158,8 @@ class FileTree(QTreeWidget):
 
     def _ctx_menu(self, pos):
         item = self.itemAt(pos)
-        rel = item.data(0, Qt.UserRole) if item else ""
-        is_dir = item.data(0, Qt.UserRole + 1) if item else False
+        rel = item.data(0, Qt.ItemDataRole.UserRole) if item else ""
+        is_dir = item.data(0, Qt.ItemDataRole.UserRole + 1) if item else False
         menu = QMenu(self)
         if item and not is_dir:
             menu.addAction("打开", lambda: self.file_activated.emit(rel))
@@ -169,7 +169,7 @@ class FileTree(QTreeWidget):
         if item:
             menu.addAction("删除", lambda: self._delete(rel)).setEnabled(False)
         menu.addAction("刷新", lambda: self.set_workspace(self.workspace))
-        menu.exec_(self.viewport().mapToGlobal(pos))
+        menu.exec(self.viewport().mapToGlobal(pos))
 
     def _new_file(self, rel, is_dir):
         base = rel if is_dir else str(Path(rel).parent)
@@ -213,7 +213,7 @@ class FileTree(QTreeWidget):
 
     def _delete(self, rel):
         ret = QMessageBox.question(self, "删除", f"确定删除 {rel}？\n（AI 删除被禁用，这里手动删除）")
-        if ret == QMessageBox.Yes:
+        if ret == QMessageBox.StandardButton.Yes:
             try:
                 p = self._abs(rel)
                 if p.is_dir():
@@ -256,7 +256,7 @@ class VaultPanel(QWidget):
             tags = ",".join(a.get("tags", []))
             item = QListWidgetItem(f"  {title}\n   {a.get('kind','code')} {tags}")
             item.setIcon(svg_icon("atom", 14))
-            item.setData(Qt.UserRole, a)
+            item.setData(Qt.ItemDataRole.UserRole, a)
             self.listw.addItem(item)
 
     def _search(self):
@@ -270,11 +270,11 @@ class VaultPanel(QWidget):
                 label += f" (相似 {h.get('score',0):.2f})"
             item = QListWidgetItem(label)
             item.setIcon(svg_icon("atom", 14))
-            item.setData(Qt.UserRole, a)
+            item.setData(Qt.ItemDataRole.UserRole, a)
             self.listw.addItem(item)
 
     def _show_detail(self, item):
-        a = item.data(Qt.UserRole)
+        a = item.data(Qt.ItemDataRole.UserRole)
         QMessageBox.information(
             self, a.get("title", "资产"),
             f"类型: {a.get('kind')}\n场景: {a.get('scene','')}\n标签: {','.join(a.get('tags',[]))}\n\n{a.get('description','')}\n\n---内容---\n{a.get('content','')[:2000]}",
@@ -346,7 +346,7 @@ class TerminalPanel(QWidget):
         self.out = QPlainTextEdit()
         self.out.setReadOnly(True)
         self.out.setMaximumBlockCount(5000)
-        self.out.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.out.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.out.customContextMenuRequested.connect(self._out_ctx)
         layout.addWidget(self.out, 1)
         row = QHBoxLayout()
@@ -395,7 +395,7 @@ class TerminalPanel(QWidget):
         menu.addSeparator()
         menu.addAction("复制", self.out.copy)
         menu.addAction("全选", self.out.selectAll)
-        menu.exec_(self.out.viewport().mapToGlobal(pos))
+        menu.exec(self.out.viewport().mapToGlobal(pos))
 
     def shutdown(self):
         """应用退出时停止所有在途终端命令。
