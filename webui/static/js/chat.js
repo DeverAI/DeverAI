@@ -574,23 +574,26 @@ function onAgentEvent(ev) {
         if (u.prompt_tokens) parts.push(`⧉ ${u.prompt_tokens}→${u.completion_tokens || 0} tokens`);
         if (parts.length) Chat.currentAI.footEl.innerHTML = parts.map(esc).join(' · ');
       }
-      flushAI();
+      // v8.14：先解除 busy 再 flush——flushAI 按 App.busy 决定是否追加打字光标，
+      // 顺序反了完成消息尾部会残留光标
       setBusyUI(false);
+      flushAI();
       break;
     }
     case 'run_error':
       setAIStatus('✗ 失败');
       setChatSub('出错了');
       appendAIText('\n\n> **错误**: ' + (ev.message || ''));
-      flushAI();
       setBusyUI(false);
+      flushAI();
       toast('运行出错: ' + (ev.message || ''), 'err', 5000);
       break;
     case 'run_cancelled':
       setAIStatus('⏹ 已停止');
       setChatSub('已停止');
-      flushAI();
+      // v8.14：与 run_done 同理，先解除 busy 再 flush
       setBusyUI(false);
+      flushAI();
       break;
     default:
       break;

@@ -505,13 +505,15 @@
         return { ok: true, message: "已添加任务：" + title };
       }
       case "complete_task": {
+        // v8.14：apiPostJSON 失败统一返回 null（如功能未开启 403），判空防 TypeError 卡死 thinking 态
         var cr = await apiPostJSON("/api/bridge/voice-pet/tasks/continue", {});
+        if (!cr) return { ok: false, message: "任务服务不可用。" };
         return { ok: cr.ok, message: cr.message || "已继续下一个任务。" };
       }
       case "delete_task": {
         // 先获取任务列表，按标题匹配
         var tasksData = await apiGetJSON("/api/bridge/voice-pet/tasks");
-        var tasks = tasksData.tasks || [];
+        var tasks = (tasksData && tasksData.tasks) || [];
         var targetTitle = intent.capture || "";
         var found = null;
         for (var i = 0; i < tasks.length; i++) {
@@ -535,6 +537,7 @@
       }
       case "continue_task": {
         var cont = await apiPostJSON("/api/bridge/voice-pet/tasks/continue", {});
+        if (!cont) return { ok: false, message: "任务服务不可用。" };
         return { ok: cont.ok, message: cont.message || "已继续下一个任务。" };
       }
       case "inject_message": {
@@ -674,7 +677,10 @@
         if (cfg.size) _scale = cfg.size;
         if (typeof cfg.visible === "boolean") _visible = cfg.visible;
         if (cfg.conv_mode) _convMode = cfg.conv_mode;
-        if (cfg.mascot_style) _sprite = cfg.mascot_style;
+        // v8.14：服务端白名单持久化的键是 builtin_sprite（此前读 mascot_style，
+        // 该键服务端永不下发 → 外观设置永不生效）；回退本地 App.config 同名键
+        var style = cfg.builtin_sprite || (window.App && App.config && App.config.builtin_sprite) || "";
+        if (style && SPRITE_SVG[style]) _sprite = style;
         renderPet();
       }
     });

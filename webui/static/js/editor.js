@@ -212,11 +212,23 @@ function closeTab(rel) {
     if (Editor.monacoReady && !Editor.fallback) Editor.instance.setModel(null);
     if (Editor.tabs.length) {
       const next = Editor.tabs[Math.min(idx, Editor.tabs.length - 1)];
-      // 重新加载下一个标签
       Editor.active = null;
       renderTabbar();
-      openTab(next.rel).catch(() => {});
-      Editor.active = next.rel;
+      const model = (Editor.monacoReady && !Editor.fallback) ? Editor.models[next.rel] : null;
+      $('#editor-host').classList.remove('hidden');
+      if (model) {
+        // v8.14：目标标签已装载模型时直接切换，不走 openTab 重读盘——
+        // 此前若该标签是 dirty 且用户在确认框取消，active 仍被置为目标，
+        // 造成「高亮标签与编辑器内容不一致」的错位
+        Editor.instance.setModel(model);
+        if (next.viewState) Editor.instance.restoreViewState(next.viewState);
+        Editor.active = next.rel;
+        App.currentFile = next.rel;
+        renderTabbar();
+      } else {
+        // 未装载（fallback 或首次打开）：交给 openTab；失败/取消时不强行指 active
+        openTab(next.rel).catch(() => { renderTabbar(); });
+      }
     } else {
       Editor.active = null;
       // v8.5.x 审查修复：#editor-welcome 不存在；关闭最后一个标签时隐藏编辑器容器

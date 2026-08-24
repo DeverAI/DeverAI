@@ -51,7 +51,12 @@
     // v8.11：携带 Bearer 令牌，登录后的端口（LLM 代理/命令桥/快照桥）可直接在终端复现。
     // 不自动携带 Cookie（HttpOnly 不可读）；需要 Cookie 场景仍可从 F12 自行追加。
     const tok = getToken();
-    if (tok) parts.push('-H', shq('Authorization: Bearer ' + tok));
+    if (tok) {
+      parts.push('-H', shq('Authorization: Bearer ' + tok));
+    } else if (method !== 'GET' || rawUrl.startsWith('/api/') || rawUrl.includes('/api/')) {
+      // v8.14：本地令牌缺失（过期清理/仅 Cookie 会话）时明示，避免复制出必然 401 的 curl
+      parts.push('-H', shq('Authorization: Bearer <本地令牌缺失：请重新登录或从 F12 应用面板取 Cookie>'));
+    }
     if (e.body) parts.push('--data-raw', shq(JSON.stringify(e.body)));
     else if (method !== 'GET') parts.push('--data-raw', shq('{}'));
     return parts.join(' ');

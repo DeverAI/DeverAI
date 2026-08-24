@@ -1359,10 +1359,13 @@ async function execUseTool(args, cfg) {
   const name = String(args.name || '').trim();
   if (!name) return { ok: false, output: '必须提供工具名（name）。' };
   try {
-    return await api('/api/bridge/toolsmith/use', {
+    const r = await api('/api/bridge/toolsmith/use', {
       method: 'POST',
       body: { name, inputs: args.inputs || {}, ..._llmBody(cfg) },
     });
+    // v8.14：显式映射 executeTool 契约（{ok,output}）——后端结构缺 output 时
+    // 不再把原始响应直接透传给 LLM（会变成空工具消息）
+    return { ok: !!r.ok, output: String((r && r.output) || ''), meta: { tool_name: name } };
   } catch (e) {
     return { ok: false, output: '自研工具执行失败: ' + String((e && e.message) || e) };
   }
@@ -1620,19 +1623,27 @@ function execBrowserNetworksGet(args) {
 function execBrowserStorageGet(args) {
   try {
     const stype = String(args.storage_type || 'all').toLowerCase();
+    // v8.14：与 network_curl 同策略 fail-closed——存储值必须打码后才能进入工具结果
+    //（deverai.v2.cfg 含明文 api_key、deverai_token 是会话令牌，直接导出会泄露给 LLM 供应商）
+    const SENSITIVE_KEY_RE = /token|key|secret|password|authorization|session/i;
+    const _maskVal = (key, val) => {
+      if (SENSITIVE_KEY_RE.test(String(key))) return '[已打码:敏感凭据]';
+      if (typeof DevTools !== 'undefined' && typeof DevTools.mask === 'function') return DevTools.mask(val);
+      return val;
+    };
     const result = {};
 
     if (stype === 'cookies' || stype === 'all') {
       result.cookies = document.cookie ? document.cookie.split(';').map(c => {
         const [k, ...v] = c.trim().split('=');
-        return { name: k, value: v.join('=') };
+        return { name: k, value: _maskVal(k, v.join('=')) };
       }) : [];
     }
     if (stype === 'localstorage' || stype === 'all') {
       const items = {};
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k) items[k] = (localStorage.getItem(k) || '').substring(0, 2000);
+        if (k) items[k] = _maskVal(k, (localStorage.getItem(k) || '').substring(0, 2000));
       }
       result.localStorage = Object.entries(items).map(([key, value]) => ({ key, value }));
     }
@@ -1640,13 +1651,13 @@ function execBrowserStorageGet(args) {
       const items = {};
       for (let i = 0; i < sessionStorage.length; i++) {
         const k = sessionStorage.key(i);
-        if (k) items[k] = (sessionStorage.getItem(k) || '').substring(0, 2000);
+        if (k) items[k] = _maskVal(k, (sessionStorage.getItem(k) || '').substring(0, 2000));
       }
       result.sessionStorage = Object.entries(items).map(([key, value]) => ({ key, value }));
     }
 
     const summary = Object.entries(result).map(([k, v]) => `${k}=${v.length}`).join(', ');
-    return { ok: true, output: `获取存储: ${summary}`, ...result };
+    return { ok: true, output: `获取存储（敏感项已打码）: ${summary}`, ...result };
   } catch (e) {
     return { ok: false, output: '获取存储失败: ' + (e.message || e) };
   }

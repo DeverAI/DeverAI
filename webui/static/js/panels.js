@@ -296,8 +296,8 @@ function renderGeneralPage() {
     </div>
     <div class="form-hint">视觉专家模型与主模型共用 API Base / Key；如需不同厂商请先切换 API Base 或填同一服务下的图像模型（如 gpt-4o / qwen-vl）。</div>
     <div class="form-row" style="margin-top:12px;">
-      <div class="form-group"><label class="form-label">Temperature</label><input class="form-input" id="set-temp" type="number" step="0.1" min="0" max="2" value="${c.temperature ?? 0.3}" /></div>
-      <div class="form-group"><label class="form-label">Max Tokens</label><input class="form-input" id="set-maxtok" type="number" min="128" value="${c.max_tokens ?? 4096}" /></div>
+      <div class="form-group"><label class="form-label">Temperature</label><input class="form-input" id="set-temp" type="number" step="0.1" min="0" max="2" value="${Number(c.temperature ?? 0.3)}" /></div>
+      <div class="form-group"><label class="form-label">Max Tokens</label><input class="form-input" id="set-maxtok" type="number" min="128" value="${Number(c.max_tokens ?? 4096)}" /></div>
     </div>
     <div class="form-group" style="margin-top:12px;"><button class="btn" id="btn-test">测试连接</button> <span id="test-result" style="font-size:12px;color:var(--text-dim)"></span></div>
 
@@ -336,17 +336,17 @@ function renderGeneralPage() {
     </div>
     <div class="form-row" style="margin-top:12px;">
       <div class="form-group"><label class="form-label">Embedding 模型 id（api 级别用，可选）</label><input class="form-input" id="set-embedding-model" placeholder="如 qwen3-text-embedding" value="${esc(c.embedding_model || '')}" /></div>
-      <div class="form-group"><label class="form-label">资产匹配阈值</label><input class="form-input" id="set-vault-thr" type="number" step="0.05" min="0" max="1" value="${c.vault_threshold ?? 0.45}" /></div>
+      <div class="form-group"><label class="form-label">资产匹配阈值</label><input class="form-input" id="set-vault-thr" type="number" step="0.05" min="0" max="1" value="${Number(c.vault_threshold ?? 0.45)}" /></div>
     </div>
     <div class="form-hint">审批模式对齐桌面版：danger 仅危险命令弹窗；copilot 由当前模型代判、拿不准才问用户；free 全放行。匹配级别：api 需 Embedding 接口可用，失败自动降级 bm25→char。</div>
 
     <div class="section-title">阈值</div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">上下文压缩阈值 (tokens)</label><input class="form-input" id="set-compress" type="number" value="${c.compress_threshold_tokens ?? 12000}" /></div>
-      <div class="form-group"><label class="form-label">AOE 分支超时 (s)</label><input class="form-input" id="set-aoe" type="number" value="${c.aoe_timeout_s ?? 20}" /></div>
+      <div class="form-group"><label class="form-label">上下文压缩阈值 (tokens)</label><input class="form-input" id="set-compress" type="number" value="${Number(c.compress_threshold_tokens ?? 12000)}" /></div>
+      <div class="form-group"><label class="form-label">AOE 分支超时 (s)</label><input class="form-input" id="set-aoe" type="number" value="${Number(c.aoe_timeout_s ?? 20)}" /></div>
     </div>
     <div class="form-row" style="margin-top:12px;">
-      <div class="form-group"><label class="form-label">保留最近消息数</label><input class="form-input" id="set-keep" type="number" value="${c.context_keep_recent ?? 6}" /></div>
+      <div class="form-group"><label class="form-label">保留最近消息数</label><input class="form-input" id="set-keep" type="number" value="${Number(c.context_keep_recent ?? 6)}" /></div>
     </div>
 
     <div class="section-title">三大模式</div>
@@ -1330,7 +1330,9 @@ function saveSettings() {
   Object.assign(App.config, cfg);
   saveConfig();
   // 桥模式：把后端强校验的三个开关同步到服务端（此前只写 localStorage，后端仍按旧值拦截）
-  if (FS && FS.mode === 'bridge' && FS.bridge.authorized) {
+  // v8.14：这三个端点只要求登录态、不依赖工作区授权——纯 FSS 模式下勾选
+  // 「肝完睡觉/语音助手」此前不会同步，sleepExecute/voice_pet_host 全部 403 静默失效
+  if (App.user) {
     api('/api/bridge/allow_ai_delete', { method: 'POST', body: { allow: !!App.config.ALLOW_AI_DELETE } }).catch(() => {});
     api('/api/bridge/feature_flags', {
       method: 'POST',
@@ -1340,6 +1342,9 @@ function saveSettings() {
       },
     }).catch(() => {});
     api('/api/bridge/power_authorized', { method: 'POST', body: { authorized: !!App.config.sleep_authorized } }).catch(() => {});
+    // v8.14：吉祥物外观键名对齐——服务端白名单只认 builtin_sprite（此前前端只写
+    // 本地 mascot_style，服务端永不知道用户选了什么，浮层形象永远不变）
+    api('/api/bridge/voice-pet/config', { method: 'POST', body: { builtin_sprite: cfg.mascot_style || 'blob' } }).catch(() => {});
   }
   closeModal();
   updateStatusbar();
