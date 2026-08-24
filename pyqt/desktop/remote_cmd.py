@@ -39,6 +39,13 @@ MAX_PENDING_RESULTS = 50
 RECONNECT_BACKOFF = [1, 2, 5, 10, 30, 60]
 
 
+def _strict_bool(v) -> bool:
+    """v8.14：严格布尔解析（与 tools.py/security.py 同源语义，仅 true/1/yes/on）。"""
+    if isinstance(v, bool):
+        return v
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 class RemoteCmdClient:
     """远程指挥客户端：长轮询 + 心跳 + 命令执行 + 结果回传。
 
@@ -253,10 +260,21 @@ class RemoteCmdClient:
             # 超限丢弃最旧的结果（防内存泄漏）
 
     def _exec_shell(self, payload: dict) -> dict:
-        """执行 shell 命令（在工作区内，输出有界）。"""
+        """执行 shell 命令（在工作区内，输出有界）。
+
+        v8.14：补齐 danger_ok 审批门（Fact.md v8.13 契约：远程 shell 与网页版
+        命令桥同权——此前远程通道完全绕过危险命令拦截，token 泄露即本机 RCE）。
+        """
+        from .security import is_dangerous_cmd
         command = str(payload.get("command") or "").strip()
         if not command:
             return {"ok": False, "output": "命令为空"}
+        if len(command) > 32000:
+            return {"ok": False, "output": "命令过长"}
+        if is_dangerous_cmd(command) and not _strict_bool(payload.get("danger_ok")):
+            return {"ok": False,
+                    "output": "危险命令已被拦截：请在 HTML 控制台勾选「危险命令显式确认」"
+                              "（payload.danger_ok=true）后重发。"}
         cwd = getattr(self._cfg, "workspace", "") or "."
         try:
             timeout = float(payload.get("timeout") or CMD_DEFAULT_TIMEOUT)

@@ -363,7 +363,9 @@ def restore_rollback_point(rid: str, round_no: int, ws: str) -> tuple[bool, str]
                 target.unlink(missing_ok=True)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(str(content), encoding="utf-8")
+            # v8.14：newline="" 精确写，回退内容不再被隐式行尾翻译改写
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                f.write(str(content))
         for rel, zip_path in (data.get("dirs") or {}).items():
             target = (root / rel).resolve()
             zp = Path(zip_path)
@@ -594,4 +596,4 @@ def generate_title(rid: str, cfg=None, llm_fn=None) -> str:
             pass
     # 兜底
     first = calls[0] if calls else "编辑"
-    return f"{first} ({_now()[8:12]})"
+    return f"{first} ({_now()[9:13]})"  # v8.14：原 [8:12] 截出 "_153" 怪后缀，改为 HHMM

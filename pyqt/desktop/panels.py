@@ -167,7 +167,8 @@ class FileTree(QTreeWidget):
         menu.addAction("新建文件夹", lambda: self._new_folder(rel, is_dir))
         menu.addAction("重命名", lambda: self._rename(rel))
         if item:
-            menu.addAction("删除", lambda: self._delete(rel)).setEnabled(False)
+            # v8.14：恢复手动删除入口（此前恒 disabled 成死功能）；确认框默认 No 防误删
+            menu.addAction("删除", lambda r=rel: self._delete(r))
         menu.addAction("刷新", lambda: self.set_workspace(self.workspace))
         menu.exec(self.viewport().mapToGlobal(pos))
 
@@ -212,7 +213,10 @@ class FileTree(QTreeWidget):
         self.set_workspace(self.workspace)
 
     def _delete(self, rel):
-        ret = QMessageBox.question(self, "删除", f"确定删除 {rel}？\n（AI 删除被禁用，这里手动删除）")
+        ret = QMessageBox.question(
+            self, "删除", f"确定删除 {rel}？\n（AI 删除未启用时，可在此手动删除）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
         if ret == QMessageBox.StandardButton.Yes:
             try:
                 p = self._abs(rel)
@@ -261,9 +265,24 @@ class VaultPanel(QWidget):
 
     def _search(self):
         q = self.search.text().strip()
-        hits = self.vault.search(q, limit=20, threshold=0.0) if q else self.vault.list()
+        if not q:
+            self.refresh()
+            return
+        # v8.14：embedding_level=api 时 vault.search 走同步网络 IO（分批、每批可达 8s），
+        # 此前在 GUI 线程直接调用会冻结整个界面数十秒——移入 QThread
+        if getattr(self, "_search_thread", None) and self._search_thread.isRunning():
+            return  # 上一次搜索仍在进行，忽略重复回车
+        self._search_thread = _VaultSearchThread(self.vault, q, self)
+        self._search_thread.ready.connect(self._fill_results)
+        self._search_thread.fail.connect(
+            lambda msg: QMessageBox.warning(self, "搜索失败", msg))
+        self._search_thread.finished.connect(lambda: self.search.setPlaceholderText("检索资产…"))
+        self.search.setPlaceholderText("搜索中…")
+        self._search_thread.start()
+
+    def _fill_results(self, hits):
         self.listw.clear()
-        for h in hits:
+        for h in hits or []:
             a = h if isinstance(h, dict) and "score" not in h else h.get("asset", h)
             label = f"  {a.get('title','')}"
             if isinstance(h, dict) and "score" in h:
@@ -279,6 +298,24 @@ class VaultPanel(QWidget):
             self, a.get("title", "资产"),
             f"类型: {a.get('kind')}\n场景: {a.get('scene','')}\n标签: {','.join(a.get('tags',[]))}\n\n{a.get('description','')}\n\n---内容---\n{a.get('content','')[:2000]}",
         )
+
+
+class _VaultSearchThread(QThread):
+    """v8.14：资产检索后台线程（api 级 embedding 为同步网络 IO，不得阻塞 GUI）。"""
+    ready = pyqtSignal(object)
+    fail = pyqtSignal(str)
+
+    def __init__(self, vault, query: str, parent=None):
+        super().__init__(parent)
+        self._vault = vault
+        self._query = query
+
+    def run(self):
+        try:
+            hits = self._vault.search(self._query, limit=20, threshold=0.0)
+            self.ready.emit(hits)
+        except Exception as e:
+            self.fail.emit(str(e))
 
 
 # ---------------------------------------------------------------------------

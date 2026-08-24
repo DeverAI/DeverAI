@@ -326,7 +326,7 @@ class Agent:
             if usage:
                 usage_total = usage
             if finish == "length":
-                await self._emit({"type": "text_delta", "content": "\n\n> ⚠️ 输出达到长度上限，可能不完整。"})
+                await self._emit({"type": "text_delta", "content": "\n\n> [!] 输出达到长度上限，可能不完整。"})
 
             if calls:
                 await self._emit({"type": "assistant_tool_calls", "calls": calls, "text": text})
@@ -341,7 +341,7 @@ class Agent:
                 final_text = ""
             break
         else:
-            await self._emit({"type": "text_delta", "content": "\n\n> ⚠️ 已达到最大工具调用轮数，已停止。"})
+            await self._emit({"type": "text_delta", "content": "\n\n> [!] 已达到最大工具调用轮数，已停止。"})
 
         # 把最终回复写入历史，保证下一轮对话上下文连续
         if final_text and not self._cancel.is_set():

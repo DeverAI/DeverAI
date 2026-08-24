@@ -37,12 +37,22 @@ def save_json(path: Path, data: Any) -> None:
                 pass
 
 
-def save_text(path: Path, text: str) -> None:
+def save_text(path: Path, text: str, eol: bool | None = None) -> None:
+    """原子写文本。
+
+    v8.14：newline="" 精确写入（不再做 \n→os.linesep 隐式翻译）。
+    此前编辑器保存会把 LF 文件整体翻成 CRLF，与 AI 工具的精确写
+    （locks.atomic_write 同为 newline=""）语义互相矛盾，造成整文件行尾漂移。
+    eol=True 时把文本统一转成 CRLF 后写入（供"保持原文件行尾风格"调用方使用）；
+    eol=None 表示按传入文本原样写。
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if eol:
+        text = text.replace("\r\n", "\n").replace("\n", "\r\n")
     tmp = _tmp_path(path)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(text)
         os.replace(tmp, path)
     finally:
@@ -51,6 +61,16 @@ def save_text(path: Path, text: str) -> None:
                 tmp.unlink()
             except OSError:
                 pass
+
+
+def sniff_crlf(path: Path) -> bool:
+    """探测既有文件是否 CRLF 行尾（读前 64KB 判断）。文件不存在返回 False。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(65536)
+        return b"\r\n" in head
+    except OSError:
+        return False
 
 
 def read_text(path: Path, default: str = "") -> str:

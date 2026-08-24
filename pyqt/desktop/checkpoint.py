@@ -69,7 +69,10 @@ def save_checkpoint(rel_path: str, content: str, task_id: str = "", source: str 
     try:
         bak_dir.mkdir(parents=True, exist_ok=True)
         bak_path = bak_dir / bak_name
-        bak_path.write_text(str(content), encoding="utf-8")
+        # v8.14：newline="" 精确写（canonical LF）——此前隐式翻译会把快照内容
+        # 行尾改写，回退后与原文件字节不一致
+        with open(bak_path, "w", encoding="utf-8", newline="") as f:
+            f.write(str(content))
         # 写一条 meta（rel_path + ts + source），便于 list/restore 反查原路径
         meta_path = bak_dir / f"{bak_name}.meta"
         try:

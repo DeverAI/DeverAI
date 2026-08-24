@@ -21,19 +21,21 @@ def is_mode_active(cfg) -> list:
 
 
 def goal_reached(goal: str, final_text: str) -> bool:
-    """判断肝完睡觉模式的目标是否达成（排除否定前缀，避免误触发）。"""
-    if not goal:
+    """判断肝完睡觉模式的目标是否达成。
+
+    v8.14：移除「已完成/done/完成」等子串兜底判定——「任务完成了一半」
+    「第一步已完成」之类表述此前会误触发关机倒计时。现在唯一达成判据是
+    配置的目标原文出现在最终回复中（AI 明确围绕该目标宣布结果）。
+    倒计时本身仍有 5 分钟可取消窗口兜底。
+    """
+    if not goal or not final_text:
         return False
     # M-1: 排除否定表达，防止"未完成/无法完成"被误判为完成
     negative = ["未完成", "还没完成", "尚未完成", "没有完成", "无法完成", "不能完成",
                 "未全部完成", "尚未全部完成", "没有全部", "未能完成", "未达成"]
     if any(m in final_text for m in negative):
         return False
-    if goal in final_text:
-        return True
-    # 兜底：AI 明确宣布完成
-    markers = ["已完成", "任务完成", "全部完成", "done", "完成"]
-    return any(m in final_text for m in markers) if final_text else False
+    return goal in final_text
 
 
 def do_power_action(action: str) -> dict:

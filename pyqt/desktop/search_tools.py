@@ -191,7 +191,9 @@ async def tool_file_search(args, ctx) -> dict:
     query = str(args.get("query") or "").strip()
     rel = args.get("path") or "."
     glob_pat = args.get("glob") or ""
-    content = bool(args.get("content"))       # 是否同时做内容正则搜索
+    # v8.14：严格布尔解析——bool("false") 为 True，模型传 "false" 会语义反转
+    content = str(args.get("content") or "").strip().lower() in ("1", "true", "yes", "on") \
+        if not isinstance(args.get("content"), bool) else bool(args.get("content"))
     try:
         limit = min(int(args.get("limit") or 20), 60)
     except (TypeError, ValueError):

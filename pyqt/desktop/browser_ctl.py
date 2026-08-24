@@ -39,6 +39,9 @@ class BrowserSession:
         self.pid: int = 0
         self.sock: socket.socket | None = None
         self._cmd_id = 0
+        # v8.14：改为实例属性——此前是类属性，所有会话共享同一 dict，
+        # 处理器跨 launch 累积且无法注销，新会话会收到旧会话的事件回调
+        self._event_handlers: dict[str, list] = {}
 
     def close(self):
         self._disconnect()
@@ -142,8 +145,6 @@ class BrowserSession:
         if opcode == 0x8:
             raise RuntimeError("浏览器关闭了调试连接")
         return payload.decode("utf-8", "replace")
-
-    _event_handlers: dict[str, list] = {}
 
     def add_event_handler(self, domain: str, handler) -> None:
         """注册 CDP 事件回调（如 "Network"、"Runtime"、"Log"）。"""
@@ -255,7 +256,11 @@ def _do_launch(exe: str, url: str, mode: str, stealth: bool,
     """执行实际的浏览器启动。"""
     tmpdir = tempfile.TemporaryDirectory(prefix="deverai_ctl_")
     try:
-        cmd = _build_launch_cmd(exe, url, mode, stealth, window_width, window_height)
+        # v8.14：user-data-dir 指向本会话专属临时目录——此前写死共享路径
+        # deverai_browser_profile，cookie/存储跨"临时"会话持久化（与设计承诺相反），
+        # 且崩溃残留锁目录会导致后续启动反复超时
+        cmd = _build_launch_cmd(exe, url, mode, stealth, window_width, window_height,
+                                profile_dir=tmpdir.name)
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.Popen(
             cmd,
@@ -311,11 +316,17 @@ def _do_launch(exe: str, url: str, mode: str, stealth: bool,
 
 
 def _build_launch_cmd(exe: str, url: str, mode: str, stealth: bool,
-                      window_width: int, window_height: int) -> list:
-    """构建浏览器启动命令行。"""
+                      window_width: int, window_height: int,
+                      profile_dir: str | None = None) -> list:
+    """构建浏览器启动命令行。
+
+    v8.14：profile_dir 为会话专属目录（随 TemporaryDirectory.cleanup() 回收）；
+    缺省时退回随机临时目录，不再使用固定共享路径。
+    """
+    profile = profile_dir or tempfile.mkdtemp(prefix="deverai_profile_")
     cmd = [exe, "--remote-debugging-port=0", "--no-first-run",
            "--disable-extensions", "--mute-audio",
-           f"--user-data-dir={tempfile.gettempdir()}/deverai_browser_profile"]
+           f"--user-data-dir={profile}"]
 
     if mode == "headless":
         # 无头模式：快速、资源少，但易被风控检测
@@ -506,115 +517,6 @@ _STEALTH_SCRIPT = """
     return 'ok';
 })()
 """
-
-
-def _inject_stealth_js(s: "BrowserSession") -> None:
-    """向当前页面注入反检测 JavaScript，使浏览器看起来像普通用户。
-
-    措施：
-    1. 删除 navigator.webdriver 标志
-    2. 伪造 window.chrome 对象
-    3. 伪造 plugins 和 mimeTypes
-    4. 伪造 permissions API
-    5. 隐藏 CDP 调试特征
-    """
-    stealth_script = """
-    (() => {
-        // 1. 删除 webdriver 标志
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        delete navigator.__proto__.webdriver;
-
-        // 2. 伪造 chrome 对象
-        if (!window.chrome) {
-            window.chrome = {};
-        }
-        if (!window.chrome.runtime) {
-            window.chrome.runtime = {
-                connect: () => {},
-                sendMessage: () => {},
-                id: undefined,
-            };
-        }
-        if (!window.chrome.loadTimes) {
-            window.chrome.loadTimes = function() { return {}; };
-        }
-        if (!window.chrome.csi) {
-            window.chrome.csi = function() { return {}; };
-        }
-        if (!window.chrome.app) {
-            window.chrome.app = {
-                isInstalled: false,
-                InstallState: {DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed'},
-                RunningState: {CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running'},
-                getDetails: () => {},
-                getIsInstalled: () => {},
-                installState: () => 'not_installed',
-                runningState: () => 'cannot_run',
-            };
-        }
-
-        // 3. 伪造 plugins（常见插件列表）
-        if (navigator.plugins && navigator.plugins.length === 0) {
-            const fakePlugins = [
-                {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
-                {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
-                {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
-            ];
-            // 使用 Proxy 模拟 plugins
-            const pluginArray = fakePlugins.map(p => ({
-                name: p.name,
-                filename: p.filename,
-                description: p.description,
-                length: 1,
-                item: () => p,
-                namedItem: () => p,
-            }));
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => pluginArray,
-                configurable: true,
-            });
-        }
-
-        // 4. 伪造 mimeTypes
-        if (navigator.mimeTypes && navigator.mimeTypes.length === 0) {
-            const fakeMimeTypes = [
-                {type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format'},
-                {type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format'},
-                {type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable'},
-                {type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable'},
-            ];
-            Object.defineProperty(navigator, 'mimeTypes', {
-                get: () => fakeMimeTypes,
-                configurable: true,
-            });
-        }
-
-        // 5. 伪造 permissions API
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => (
-            parameters.name === 'notifications' ?
-                Promise.resolve({state: Notification.permission}) :
-                originalQuery(parameters)
-        );
-
-        // 6. 隐藏 webdriver 特征
-        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-        document.$cdc_asdjflasutopfhvcZLmcfl_ = undefined;
-
-        // 7. 伪造 connection（防止 WebRTC 泄露真实 IP）
-        if (navigator.connection) {
-            Object.defineProperty(navigator.connection, 'rtt', {get: () => 50});
-        }
-
-        return 'stealth injected';
-    })()
-    """
-    try:
-        s.command("Runtime.evaluate", {"expression": stealth_script, "returnByValue": True}, timeout=10.0)
-    except Exception:
-        pass
 
 
 def click(selector: str = "", text: str = "") -> dict:

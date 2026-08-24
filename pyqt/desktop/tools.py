@@ -436,14 +436,20 @@ async def tool_write_file(args, ctx: ToolContext) -> dict:
     old = ""
     old_size = 0
     existed = p.exists()
+    crlf = False
     if existed:
         try:
+            from .storage import sniff_crlf
+            crlf = sniff_crlf(p)  # v8.14：保持原文件行尾风格（atomic_write 为精确写）
             old = p.read_text(encoding="utf-8", errors="replace")
             old_size = len(old.encode("utf-8"))
         except OSError:
             old = ""
             old_size = 0
             existed = False
+    if crlf:
+        # 编辑器/模型侧文本一律 \n 规范，写回前还原为原文件 CRLF 风格
+        content = content.replace("\r\n", "\n").replace("\n", "\r\n")
     # v6.3 Checkpoint：写入前快照原文件内容（含空文件，防覆盖无痕）
     if getattr(ctx.cfg, "ENABLE_CHECKPOINT", True) and p.exists():
         try:
@@ -509,9 +515,14 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
     if not p.is_file():
         return {"ok": False, "output": f"文件不存在: {rel}"}
     try:
+        from .storage import sniff_crlf
+        crlf = sniff_crlf(p)  # v8.14：保持原文件行尾风格
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         return _format_error(e)
+    # 模型提供的匹配串/替换串统一 \n 规范（JSON 里可能带 \r\n）
+    old_str = old_str.replace("\r\n", "\n")
+    new_str = new_str.replace("\r\n", "\n")
     if not old_str:
         return {"ok": False, "output": "old_string 不能为空。建议先 read_file 获取精确内容。"}
     count = text.count(old_str)
@@ -524,6 +535,9 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
     if count > 1 and not replace_all:
         return {"ok": False, "output": f"匹配到 {count} 处，请设置 replace_all=true 或提供更精确的 old_string（含上下文）。"}
     new_text = text.replace(old_str, new_str) if replace_all else text.replace(old_str, new_str, 1)
+    if crlf:
+        # 写回前还原为原文件 CRLF 风格（atomic_write 为精确写）
+        new_text = new_text.replace("\r\n", "\n").replace("\n", "\r\n")
     # v6.3 Checkpoint：编辑前快照原文件内容
     if getattr(ctx.cfg, "ENABLE_CHECKPOINT", True):
         try:
@@ -843,6 +857,10 @@ async def tool_run_command(args, ctx: ToolContext) -> dict:
                 jobs.finish(job_id, False, str(e))
 
         task.add_done_callback(_done)
+        # v8.14：持强引用防 GC——asyncio 文档明确警告仅挂回调的 task 可能被
+        # 事件循环垃圾回收，表现为后台命令静默消失
+        _BG_TASKS.add(task)
+        task.add_done_callback(_BG_TASKS.discard)
         return {"ok": True, "output": f"命令已在后台启动（异步构建，编号 {job_id}），"
                                        f"可回主对话继续其他事，完成后会自动提示：{cmd}"}
     return await _exec_command(ctx, cmd, p, timeout)
@@ -1074,7 +1092,7 @@ async def tool_web_search(args, ctx: ToolContext) -> dict:
     if not results:
         return {"ok": False, "output": f"搜索失败或无结果（{channel}）。可换个关键词或稍后重试。"}
     raw = "\n".join(f"- {r['title']}\n  {r['url']}\n  {r.get('snippet', '')}" for r in results)
-    if args.get("summarize", True):
+    if _strict_bool(args.get("summarize", True)):  # v8.14：严格布尔，"false" 字符串不再为真
         raw = await summarize_with_helper(ctx.cfg, raw, query)
     return {"ok": True, "output": f"[搜索：{query} | 通道：{channel}]\n{raw}",
             "meta": {"results": results, "channel": channel}}
@@ -2032,7 +2050,8 @@ async def tool_request_write_permission(args, ctx: ToolContext) -> dict:
 async def tool_search_tool(args, ctx: ToolContext) -> dict:
     """工具查找元工具：裁剪后可查询被隐藏的工具及其用法（KV 缓存友好方案 A）。"""
     query = str(args.get("query") or "").strip()
-    defs = list(_ALL_DEFS.values())
+    # v8.14：取局部快照（build_tool_defs 会整体替换 _ALL_DEFS 引用）
+    defs = list(globals().get("_ALL_DEFS", {}).values())
     visible = set(args.get("_visible") or [])
     if not query:
         hidden = [d["function"]["name"] for d in defs if d["function"]["name"] not in visible]
@@ -2079,7 +2098,7 @@ async def tool_build_tool(args, ctx: ToolContext) -> dict:
     from .experts import finalize_tool_build  # 审核+入库统一入口（避免循环导入）
     msg = await finalize_tool_build(ctx.cfg, spec, requirement, dup,
                                     vault=ctx.vault, emit=ctx.emit)
-    return {"ok": msg.startswith("✅") or "已入库" in msg, "output": msg,
+    return {"ok": msg.startswith("[OK]") or "已入库" in msg, "output": msg,
             "meta": {"tool_name": spec.get("name")}}
 
 
@@ -2447,7 +2466,7 @@ async def tool_port_refs(args, ctx: ToolContext) -> dict:
     except (OSError, ValueError) as e:
         return _format_error(e)
     header = (f"端口 {port} 的引用定位（扫描 {scanned} 个文件）。\n"
-              "⚠️ 这些只是文本匹配结果：改端口前必须逐处确认语义（硬编码/注释/文档示例），"
+              "[!] 这些只是文本匹配结果：改端口前必须逐处确认语义（硬编码/注释/文档示例），"
               "禁止全局查找替换盲改。改完记得 port_declare 更新登记。\n")
     return {"ok": True, "output": header + ("\n".join(hits) if hits else "未找到引用。"),
             "meta": {"hits": len(hits)}}
@@ -3222,9 +3241,10 @@ def build_tool_defs(cfg: Config, expert_mode: bool = False, allow_delegate: bool
             },
         })
     # v5: 注册全量清单供裁剪与 search_tool 使用
-    _ALL_DEFS.clear()
-    for d in defs:
-        _ALL_DEFS[d["function"]["name"]] = d
+    # v8.14：先构建新 dict 再整体替换引用——此前 clear+逐条重灌期间，
+    # 并发调用（并行专家/AOE 子 Agent 的 to_thread）会读到空表甚至抛
+    # "dict changed size during iteration"
+    globals()["_ALL_DEFS"] = {d["function"]["name"]: d for d in defs}
     return defs
 
 
@@ -3232,6 +3252,7 @@ def build_tool_defs(cfg: Config, expert_mode: bool = False, allow_delegate: bool
 # v5 工具匹配序列与裁剪（仅 token 计费模式生效；KV 缓存友好的方案 A）
 # --------------------------------------------------------------------------
 _ALL_DEFS: dict = {}
+_BG_TASKS: set = set()  # v8.14：后台任务强引用集，防 create_task 结果被 GC
 
 TOOL_MATCH = {
     "write_file": ["写", "创建", "生成", "新增文件", "输出文件", "保存", "write", "create"],

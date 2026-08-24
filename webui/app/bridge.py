@@ -1056,7 +1056,7 @@ async def toolsmith_build(body: dict, request: Request, user: dict = Depends(cur
     except Exception as e:
         log_error("工具审核入库失败", e)
         raise HTTPException(502, "工具审核入库失败")
-    return {"ok": msg.startswith("✅") or "已入库" in msg, "output": msg,
+    return {"ok": msg.startswith("[OK]") or "已入库" in msg, "output": msg,
             "tool_name": spec.get("name")}
 
 

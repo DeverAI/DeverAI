@@ -322,8 +322,7 @@ def console_eval(expression: str, timeout: float = 15.0) -> dict:
             "expression": expression,
             "returnByValue": True,
             "awaitPromise": True,
-            "timeout": int(timeout * 1000),
-        }, timeout=timeout + 5.0)
+        }, timeout=timeout + 5.0)  # v8.14：CDP Runtime.evaluate 无 timeout 参数（真实超时由 socket 层保证），移除幽灵参数
 
         result = r.get("result", {})
         val = result.get("value")
@@ -481,7 +480,6 @@ def sources_get(url_or_index: str, max_len: int = 10000) -> dict:
                 "expression": fetch_js,
                 "returnByValue": True,
                 "awaitPromise": True,
-                "timeout": 15000,
             }, timeout=20.0)
             content = (r2.get("result") or {}).get("value", "")
             if content and not content.startswith("[fetch失败"):

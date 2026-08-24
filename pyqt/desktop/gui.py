@@ -555,15 +555,21 @@ class EditorWidget(QTabWidget):
     def _close_at(self, idx):
         tab = self.tabs[idx]
         if tab.dirty:
-            ret = QMessageBox.question(self, "未保存", f"「{tab.path}」未保存，确定关闭？")
+            # v8.14：默认按钮改为 No（回车不再等于丢弃修改）
+            ret = QMessageBox.question(
+                self, "未保存", f"「{tab.path}」未保存，确定关闭？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
             if ret != QMessageBox.StandardButton.Yes:
                 return
         if self._active is tab:
             self._completion_timer.stop()
             self._clear_ghost(tab)
         tab.editor.deleteLater()
-        self.tabs.pop(idx)
+        # v8.14：先 removeTab 再 pop——顺序反了会触发 currentChanged 时
+        # self.tabs 与控件索引错位，_active 瞬时指向错误标签
         self.removeTab(idx)
+        self.tabs.pop(idx)
 
     def _to_rel(self, path: str) -> str:
         """绝对路径 → 相对工作区路径（斜杠分隔，供快照存储）；不在工作区内返回空串。"""
@@ -589,7 +595,9 @@ class EditorWidget(QTabWidget):
             except Exception:
                 pass  # 快照失败不阻塞保存
         try:
-            save_text(tab.path, tab.editor.toPlainText())
+            # v8.14：保持原文件行尾风格（编辑器内部一律 \n，保存时按原文件还原）
+            from .storage import sniff_crlf
+            save_text(tab.path, tab.editor.toPlainText(), eol=sniff_crlf(Path(tab.path)))
         except OSError as e:
             QMessageBox.warning(self, "保存失败", str(e))
             return ""
@@ -1416,14 +1424,15 @@ class LockDialog(QDialog):
         for s in get_locks().snapshot():
             it = QTreeWidgetItem(self.tree, [
                 s["resource"], s["owner"], str(s["age_s"]), str(s["expires_in_s"])])
-            self._rows[id(it)] = (s["resource"], s["age_s"])
+            # v8.14：用 setData 存资源名——id() 作键在对象回收后可能被复用而误映射
+            it.setData(0, Qt.ItemDataRole.UserRole, (s["resource"], s["age_s"]))
         self._on_sel()
 
     def _on_sel(self):
         sel = self.tree.selectedItems()
         ok = False
         if sel:
-            res, age = self._rows.get(id(sel[0]), ("", 0))
+            res, age = sel[0].data(0, Qt.ItemDataRole.UserRole) or ("", 0)
             ok = age >= 120
         self.unlock_btn.setEnabled(ok)
 
@@ -1431,7 +1440,7 @@ class LockDialog(QDialog):
         sel = self.tree.selectedItems()
         if not sel:
             return
-        res, age = self._rows.get(id(sel[0]), ("", 0))
+        res, age = sel[0].data(0, Qt.ItemDataRole.UserRole) or ("", 0)
         if age < 120:
             return
         e = get_locks().force_release(res)
@@ -1711,8 +1720,6 @@ class DeverAIApp(QMainWindow):
         # v8.5.6：全局建议计数
         self._suggest_total = 0
         self._suggest_processed = 0
-        # v8.3 P1-9：AI 自动决策定时器（可停止，避免用户手动确认后定时器仍触发）
-        self._auto_decision_timer = None
 
         self._build_ui()
         self._apply_theme()
@@ -2080,7 +2087,9 @@ class DeverAIApp(QMainWindow):
         ok, content = ckpt.restore_checkpoint(bak_path, rel_path)
         if not ok:
             raise RuntimeError(content)
-        save_text(p, content)
+        # v8.14：按当前文件行尾风格写回（快照存 canonical LF，恢复时还原原风格）
+        from .storage import sniff_crlf as _sniff
+        save_text(p, content, eol=_sniff(p) if p.exists() else False)
         # v8.9 回退审核：用户手动恢复 checkpoint 必须留审计记录
         try:
             from . import audit as _audit
@@ -3085,15 +3094,27 @@ class DeverAIApp(QMainWindow):
             log_error("UI 事件处理异常", e)
 
     def _schedule_auto_decision(self, close_fn):
-        """v8.3 P1-9：ai_decision_delay_s>0 时，用户超时不回答则由 AI 自己决策（默认放行）。"""
+        """v8.3 P1-9：ai_decision_delay_s>0 时，用户超时不回答则由 AI 自己决策（默认放行）。
+
+        v8.14：timer 与对话框成对返回（单槽位此前会被连续弹窗覆盖，
+        第一个 timer 失去停止入口并对已关闭 dialog 调 done()）。
+        """
         delay = int(getattr(self.cfg, "ai_decision_delay_s", 0))
         if delay <= 0:
-            return
-        # 使用 QTimer 实例（非 singleShot），便于在用户手动确认后停止定时器
-        self._auto_decision_timer = QTimer(self)
-        self._auto_decision_timer.setSingleShot(True)
-        self._auto_decision_timer.timeout.connect(close_fn)
-        self._auto_decision_timer.start(delay * 1000)
+            return None
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(close_fn)
+        timer.start(delay * 1000)
+        return timer
+
+    @staticmethod
+    def _cancel_auto_decision(timer):
+        if timer is not None:
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass  # C++ 对象可能已随父级销毁
 
     def _ask_approval(self, ev):
         payload = ev.get("payload") or {}
@@ -3121,11 +3142,9 @@ class DeverAIApp(QMainWindow):
         box.setWindowTitle("需要确认操作")
         box.setText(f"AI 请求执行操作：\n\n{summary}\n\n是否允许？")
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        self._schedule_auto_decision(lambda: box.done(QMessageBox.StandardButton.Yes))
+        timer = self._schedule_auto_decision(lambda: box.done(QMessageBox.StandardButton.Yes))
         ret = box.exec()
-        if self._auto_decision_timer is not None:
-            self._auto_decision_timer.stop()
-            self._auto_decision_timer = None
+        self._cancel_auto_decision(timer)
         self.agent_thread.resolve_approval(call_id, ret == QMessageBox.StandardButton.Yes)
 
     def _show_diff_preview(self, ev):
@@ -3136,11 +3155,9 @@ class DeverAIApp(QMainWindow):
         new = ev.get("new", "")
         try:
             dlg = DiffPreviewDialog(self, rel, old, new)
-            self._schedule_auto_decision(lambda: dlg.accept())
+            timer = self._schedule_auto_decision(lambda: dlg.accept())
             accepted = dlg.exec() == QDialog.DialogCode.Accepted
-            if self._auto_decision_timer is not None:
-                self._auto_decision_timer.stop()
-                self._auto_decision_timer = None
+            self._cancel_auto_decision(timer)
         except Exception as e:
             log_error("差异预览对话框异常", e)
             self.chat.ai_note(f"差异预览异常（为安全起见已拒绝）: {e}")

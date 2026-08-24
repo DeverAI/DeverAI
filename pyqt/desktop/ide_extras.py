@@ -679,7 +679,8 @@ class RoundRestoreDialog(QDialog):
             return
         ans = QMessageBox.question(
             self, "恢复确认",
-            "恢复将用该会话快照覆盖整个工作区当前状态（不含 backups/data 等）。\n\n"
+            "恢复将用该会话快照覆盖同名文件的当前内容（不含 backups/data 等）。\n"
+            "注意：快照之后新建的文件不会被删除，仅同名文件被覆盖。\n\n"
             "确认恢复？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if ans != QMessageBox.StandardButton.Yes:
             return

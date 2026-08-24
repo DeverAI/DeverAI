@@ -109,9 +109,12 @@ def scan_workspace(ws: str, tree: Optional[dict] = None) -> dict:
         except ValueError:
             continue
         # 跳过快照/备份/数据目录（P2-18：不排除 static，网页端代码需纳入依赖树校验）
+        # v8.14：排除表对齐 tools.SKIP_DIRS 全集（.venv/venv/.idea/.vscode/dist/build），
+        # 此前虚拟机环境工作区会被逐文件读取 200KB，后台扫描长时间占盘
         top = rel.split("/", 1)[0]
         if top in ("backups", "checkpoints", "data", "sessions", "dev_log",
-                   "updates", ".git", "node_modules", "__pycache__"):
+                   "updates", ".git", "node_modules", "__pycache__",
+                   ".venv", "venv", ".idea", ".vscode", "dist", "build"):
             continue
         try:
             size = p.stat().st_size

@@ -192,21 +192,23 @@ def delete_model(model_id: str) -> bool:
 
 def ensure_seed(cfg: Config) -> None:
     """首次使用：把当前主模型种进注册表（已存在同名则不动）。"""
-    models = load_models()
-    if any(m.id == cfg.model for m in models):
-        return
-    models.append(ModelInfo(
-        id=cfg.model,
-        name=f"{cfg.model}（主模型）",
-        url=cfg.api_base_url,
-        context_size=32000,
-        max_output=cfg.max_tokens or 4096,
-        intro="当前主模型，自动导入。请补充介绍与分数。",
-    ))
-    save_models(models)
+    # v8.14: 写盘纳入 _io_lock（与 upsert/set_score 锁纪律一致）
+    with _io_lock:
+        models = load_models()
+        if any(m.id == cfg.model for m in models):
+            return
+        models.append(ModelInfo(
+            id=cfg.model,
+            name=f"{cfg.model}（主模型）",
+            url=cfg.api_base_url,
+            context_size=32000,
+            max_output=cfg.max_tokens or 4096,
+            intro="当前主模型，自动导入。请补充介绍与分数。",
+        ))
+        save_models(models)
 
 
-# ---------------------------------------------------------------- 调用配置
+    # ---------------------------------------------------------------- 调用配置
 
 def get_llm_cfg(cfg: Config, model_id: str) -> Config:
     """按注册表条目生成可直接传给 llm.py 的调用配置；找不到条目回退全局。

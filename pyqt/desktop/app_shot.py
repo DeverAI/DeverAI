@@ -150,8 +150,8 @@ def _grab(hwnd: int, out_path: str) -> bool:
 def _wait_and_shoot(pid: int, out_path: str, timeout: float,
                     title_hint: str = "") -> bool:
     """轮询等待窗口出现并截图。返回是否成功。"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout  # v8.14：单调时钟，系统对时不再影响等待窗口
+    while time.monotonic() < deadline:
         hwnd = find_window_pid(pid, title_hint)
         if hwnd:
             if _grab(hwnd, out_path):

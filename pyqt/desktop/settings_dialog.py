@@ -120,7 +120,8 @@ class SettingsDialog(QDialog):
     def __init__(self, cfg: Config, parent=None):
         super().__init__(parent)
         self.cfg = cfg
-        self._cfg_backup = dict(cfg.__dict__)  # 取消时回滚（含导入设置的暂存修改）
+        import copy
+        self._cfg_backup = copy.deepcopy(cfg.__dict__)  # v8.14：深拷贝——浅拷贝下嵌套可变字段就地修改无法回滚
         self._accepted = False
         self.setWindowTitle("设置")
         self.setObjectName("settingsDialog")

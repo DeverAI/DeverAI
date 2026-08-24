@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import html
 
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRect, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPixmap, QMouseEvent, QFont, QPolygon
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -1344,6 +1344,11 @@ class TracePanel(QWidget):
         # 时间线
         self.timeline = TraceTimeline()
         self.timeline.range_changed.connect(self._on_range_changed)
+        # v8.14：时间轴合并刷新定时器
+        self._timeline_timer = QTimer(self)
+        self._timeline_timer.setSingleShot(True)
+        self._timeline_timer.setInterval(150)
+        self._timeline_timer.timeout.connect(self._flush_timeline)
         self.timeline.marker_clicked.connect(self._on_marker_clicked)
         v.addWidget(self.timeline)
 
@@ -1521,7 +1526,12 @@ class TracePanel(QWidget):
         # 增加 kind 字段便于区间统计识别 run_error
         item["kind"] = ev.get("type", "")
         self.flow.add_item(item)
-        # P1-2：流式追加时不重置 marker/range（避免每条事件抹掉用户标记）
+        # P1-2：显式追加时保留 marker/range，不能每次事件抹掉用户标记
+        # v8.14：150ms 合并刷新——text_delta 逐字到达时此前每次都全量重建时间轴，O(n²) 卡顿
+        if not self._timeline_timer.isActive():
+            self._timeline_timer.start()
+
+    def _flush_timeline(self):
         self.timeline.set_items(self.flow._all_items, reset_extras=False)
 
     def set_history(self, history: list[dict]):

@@ -307,7 +307,7 @@ async def finalize_tool_build(cfg: Config, spec: dict, requirement: str, duplica
                             "payload": {"kind": "tool_build", "tool": spec.get("name")}})
             except Exception:
                 pass
-        return f"❌ 审核未通过，不入库：{verdict.get('note')}"
+        return f"[X] 审核未通过，不入库：{verdict.get('note')}"
     from . import toolsmith  # 延迟导入
     entry = toolsmith.register(spec.get("name"), spec.get("description"),
                                spec.get("kind", "prompt"), spec.get("impl", ""),
@@ -326,7 +326,7 @@ async def finalize_tool_build(cfg: Config, spec: dict, requirement: str, duplica
             await emit({"type": "tool_registered", "tool": entry})
         except Exception:
             pass
-    return (f"✅ 工具 {entry['name']} 审核通过已入库（自研工具库 + 资产银行）。"
+    return (f"[OK] 工具 {entry['name']} 审核通过已入库（自研工具库 + 资产银行）。"
             f"用法：use_tool(name='{entry['name']}', inputs={{...}})。")
 
 
@@ -403,7 +403,7 @@ async def run_expert_team(cfg: Config, user_message: str, emit,
         except AcquireLockTimeout as e:
             t.status = "资源等待失败"
             t.feedback = str(e)
-            if t not in feedbacks:
+            if not any(x is t for x in feedbacks):  # v8.14：身份去重
                 feedbacks.append(t)
             await _emit({"type": "expert_status", "expert_id": t.expert_id, "status": t.status})
             return
@@ -468,7 +468,7 @@ async def run_expert_team(cfg: Config, user_message: str, emit,
             t.feedback = f"执行异常：{type(e).__name__}: {e}"
         finally:
             locks.release_expert(t.expert_id)
-        if t not in feedbacks:  # 高级专家重跑同一任务不重复计入
+        if not any(x is t for x in feedbacks):  # v8.14：身份去重——dataclass 值相等会把字段相同的两个任务误判为重复
             feedbacks.append(t)
         await _emit({"type": "expert_status", "expert_id": t.expert_id, "status": t.status,
                      "cost": estimate_cost(t.usage, t.model_id or cfg.model, cfg)})
