@@ -797,9 +797,12 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
         proc = None
         try:
             creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            # v8.14：limit 提升到 1MB——StreamReader 默认 64KB 行上限会让
+            # 单行超长输出触发 ValueError 断流（对齐 webui bridge.py）
             proc = await asyncio.create_subprocess_shell(
                 cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                 stdin=asyncio.subprocess.DEVNULL, cwd=str(cwd), creationflags=creationflags,
+                limit=1024 * 1024,
             )
             deadline = time.monotonic() + timeout
             timed_out = False

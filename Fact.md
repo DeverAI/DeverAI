@@ -72,3 +72,17 @@
   显式能力，shell 层不施加 fs/read 的 data/backups 读保护；数据保护语义只适用于文件类工具，shell 的边界
   是工作区 resolve + 危险命令审批（danger_ok）。若部署场景不接受该边界，应改用不可信模型或关闭命令桥/
   远程指挥，而不是依赖工具层过滤。该边界已在 README 安全红线注明。
+- [2026-08-24 全量检修 v8.14] 用户要求三版本（lite/webui/pyqt）全量检修、允许大改架构（容忍度 95/100）、
+  不删库。用户裁决：①桌面版 PyQt5 迁移到 PyQt6（本机仅装 PyQt6）；②lite/app 与 webui/app 保持独立副本，
+  不抽共享包；③检修前 git init 建本地基线快照（api_keys.py/data/backups/Err.log 永不入库）。
+  本轮关键修复：Lite P0（缺 codename.py 致工作区授权 500，Lite 核心功能整体不可用）；webui P1×4
+  （SSE 64KB 断流/设置同步门控/storage 明文导出/rmtree 冻结事件循环）；pyqt P1×6（CRLF 字节漂移/
+  goal_reached 子串兜底误触发关机倒计时/远程 shell 绕过 danger_ok/Vault 搜索冻结 UI/浏览器 profile
+  固定共享路径/_ALL_DEFS 竞态）；emoji 清理（✅❌⚠️ → [OK]/[X]/[!]，tools/bridge 判定端同步改）。
+  行尾策略裁决：写入口统一精确写（newline=""），读侧规范化 \n，写回按原文件 sniff_crlf 保持风格；
+  新文件一律 LF。PyQt6 迁移采用两轮 codemod + 属性审计（hasattr 全量校验）归零 + offscreen 实例化验证。
+  详细修复清单见 dev_log/20260824.md。
+- [2026-08-24 环境事实] 本机 Python 3.12.10 + PyQt6.11（无 PyQt5）；历史 pyc 为 3.10/3.13（另一台
+  机器的开发环境），本仓库在该机器上曾存在 dev_log/ 与 README/requirements/AGENT.txt/sync_server.py，
+  当前工作区副本中不存在；server.py 打包清单对缺失文件静默跳过（向前兼容，恢复文件后自动入包）。
+  webui 与 lite 的 config.py 日志前缀均为 [lite] 属历史遗留，本轮已把 webui 侧改回 [web]。
