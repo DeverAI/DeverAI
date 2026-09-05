@@ -1,7 +1,7 @@
 # DeverAI — 核心设计文档（当前最新状态）
 
 项目代号：DeverAI
-核心理念：本地记忆即资产，复用优先于重建；**UI 即 Agent 运行地**——UI 用普通 Python（PyQt5 桌面程序），Agent 直接运行在本机 Python 进程内，操作工作区内的真实文件与真实命令行。
+核心理念：本地记忆即资产，复用优先于重建；**UI 即 Agent 运行地**——UI 用普通 Python（PyQt6 桌面程序），Agent 直接运行在本机 Python 进程内，操作工作区内的真实文件与真实命令行。
 
 > 本文档只描述项目**当前**的样子（架构、模块、设计决策、开关、安全红线）。
 > 版本演进统一记录在 `dev_log/`；实现方法与技术选型见 `Techniques.md`；用户运行指引见 `README.md`；用户偏好与冲突裁决见 `Fact.md`；常见错误类型见 `FreqErr.md`。
@@ -10,7 +10,7 @@
 
 ## 1. 项目定位与核心特点
 
-DeverAI 是一款「UI 即 Agent 运行地」的 AI 开发工作台：AI Agent 直接运行在本机 Python 进程内，以 **PyQt5 桌面应用**为主形态（另有完整网页版 / 超轻量远控 Lite / 命令行 CLI / 同步服务器四个入口），通过 OpenAI 兼容接口直连大模型，无需浏览器权限桥接即可操作工作区内的真实文件与真实命令行。
+DeverAI 是一款「UI 即 Agent 运行地」的 AI 开发工作台：AI Agent 直接运行在本机 Python 进程内，以 **PyQt6 桌面应用**为主形态（另有完整网页版 / 超轻量远控 Lite / 命令行 CLI / 同步服务器四个入口），通过 OpenAI 兼容接口直连大模型，无需浏览器权限桥接即可操作工作区内的真实文件与真实命令行。
 
 当前核心特点：
 
@@ -21,6 +21,7 @@ DeverAI 是一款「UI 即 Agent 运行地」的 AI 开发工作台：AI Agent �
 | 3. Worktree 独立安全备份审核 | 三层防线：文件级版本快照（改前自动存原内容，可回退）、任务级会话快照（每轮 zip 打包工作区 + 轮内回退点，删除目录前自动整目录 zip 备份、可还原）、依赖树校验（缺文件/过小报警 → 只读锁定）。快照删除前由 AI 独立审查，路径全部防 `../` 与 zip-slip 越界。回退审核日志（`data/audit.jsonl`）记录所有回退/删除/恢复/漂移回本地动作，AI 可用 `list_audits` 自查。 |
 | 4. 自动化设计·搜索·工具池 | 工具设计专家（接需求→查重→构建→审核→入库，桌面+网页双端桥接）、自研工具库（prompt 型/script 型 + 工具医生自动修 bug）、资产银行资料检修（inspect/repair）、互联网搜索（DDG/付费 API）、三级文件匹配（char/bm25/embedding）、浏览器控制、直接操控浏览器（CDP 启动/跳转/点击/输入/按键/关闭）与外部 exe 自动化（开关默认关闭 + 副驾驶全程监督 + 操作记录 journal）。 |
 | 5. 全量端口检修 | 所有 API 端口有真实实现、前端全部接线；危险命令四端同源 + `danger_ok` 严格确认；跨端快照互通（网页 AES-GCM 信封 / web-cold / 桌面 zlib 冷备）；远程指挥控制台在 sync_server 首页即可下发 shell/读写文件/ping 并轮询结果；网页版多任务会话、附件引用、知识文档直达等控件全部真实可用。 |
+| 6. 记忆·出关·外部 API 治理（v8.22） | Agent 跨会话长期记忆（桌面 memory.py + 网页 memory.js，四类条目、自动召回注入、漂移合体）；外发内容必须经 outbound_deliver 逐字复述原始要求 + 审核卡批准才出关（邮件仅存草稿）；安全中心维护外部 API 清单，AI 经 api_request → `/api/llm/ext_proxy`（SSRF 防护）调用；一键 heartbeat 泄露检查（8 类密钥 + API 厂商存活）+ 可选 SMTP 报告。 |
 
 ---
 
@@ -30,7 +31,7 @@ DeverAI 是一款「UI 即 Agent 运行地」的 AI 开发工作台：AI Agent �
 
 ```
 +---------------------------------------------------------------------+
-| PyQt5 桌面程序（python pyqt/main.py）—— UI 即 Agent 运行地           |
+| PyQt6 桌面程序（python pyqt/main.py）—— UI 即 Agent 运行地           |
 | 【界面层】                                                            |
 |   gui.py           主窗口：Quest 导航|聊天/编辑器|右缘面板；事件泵/审批 |
 |   quest_panels.py  Summary/Trace/任务管理器/建议/GuardBanner 等面板   |
@@ -81,15 +82,16 @@ DeverAI 是一款「UI 即 Agent 运行地」的 AI 开发工作台：AI Agent �
 
 - `lite/lite_main.py` + `lite/app/lite_server.py` + `lite/static/lite.html`：超轻量远控（鉴权 + LLM 代理 + 文件桥 + 命令桥），零 CDN 单文件前端，完全自包含（`lite/app/` 为独立副本，不依赖 `webui/app/`），刻意精简（写上限 5MB、无邮箱注册/项目下载/快照桥、文件树无 modified 等）。
 - `pyqt/cli_main.py`：交互式命令行 Agent，复用桌面 `Agent` 内核（工具/上下文压缩/专家团/审批门全通用），不依赖 GUI。
-- `sync_server.py`：部署在用户自有服务器，提供快照存取（`/push`、`/pull`）、冷备 Agent 续聊（`/chat`）、漂移状态（`/drift/*`）、远程指挥（`/cmd/*`）与 HTML 状态页（`/`、`/chat/page`）。
+- `sync_server.py`：部署在用户自有服务器，提供快照存取（`/push`、`/pull`）、冷备 Agent 续聊（`/chat`）、漂移状态（`/drift/*`）、远程指挥（`/cmd/*`）与 HTML 状态页（`/`、`/chat/page`）；v8.24 起随仓库分发（零 CDN、FastAPI 单文件），数据目录默认 `./sync_data`。
 
-### 2.4 DSH 插件版架构（第六入口，Cordis 动态插件）
+### 2.4 DSH 插件版架构（第六入口，Cordis 静态插件）
 
-- `dsh-plugin-deverai`（Cordis 动态插件 `devai-2`）：将 DeverAI 的五大核心能力移植到 DeepSeek Harness Web GUI，使 DSH 成为一个接近 DeverAI 体验的 AI 开发工作台。
+- `@deverai/hub`（Cordis 静态 npm 插件，前身为动态插件 `dehub-11/pkg-34`「DeverAI Hub」）：将 DeverAI 的五大核心能力移植到 DeepSeek Harness Web GUI，使 DSH 成为一个接近 DeverAI 体验的 AI 开发工作台。
+- **插件代码不在本仓库分发**：静态插件源码与 `node_modules` 符号链接落盘于 DSH 宿主机的 `~/.dsh/profiles/web/deverai-hub/`（含 `package.json`/`lib/index.js`/`lib/client.js`），由 `cordis.patch.yml` 注册 host/client 两个 plugin id（`deverai-hub-host` / `deverai-hub-client`）加载；本仓库仅保留参考图（`参考图/`）与档案记录（`Fact.md` 2026-08-22 条目）。
 - Host 半边（Node.js 进程）：通过 `webServer` 注册 HTTP 路由，通过 `harness.handle` 注册 Client→Host RPC 处理器，通过 `fs`/`shell` 服务操作工作区文件与命令。
 - Client 半边（浏览器）：通过 `slots.inject` + `slots.register` 在 `shell.overlay` 注册浮层状态面板，在 `settings.section` 注册设置页面，通过 `host.call` 调用 Host RPC。
-- 数据存储：`$DEVERAI_DIR/dsh-plugin-storage/` 下的 JSON 文件（`assets.json`、`tools.json`、`drift_state.json`、`experts_state.json`、`checkpoints/`）。
-- 模块开关：`ENABLE_DSH_PLUGIN`（默认 true，关闭时隐藏所有 DSH 插件入口）。
+- 数据存储：DSH 宿主机 `$DEVERAI_DIR/dsh-plugin-storage/` 下的 JSON 文件（`assets.json`、`tools.json`、`drift_state.json`、`experts_state.json`、`checkpoints/`）。
+- 本仓库无 `ENABLE_DSH_PLUGIN` 开关（插件开关在 DSH 宿主侧；v8.24 复检修正此前文档失实声明）。
 
 五大核心模块：
 
@@ -109,12 +111,12 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 
 | 入口 | 命令 | 默认地址 | 说明 |
 |------|------|----------|------|
-| 桌面版 | `python pyqt/main.py` | 本机 GUI | PyQt5 主形态，功能最全 |
+| 桌面版 | `python pyqt/main.py` | 本机 GUI | PyQt6 主形态，功能最全 |
 | 完整网页版 | `python webui/web_main.py` | http://127.0.0.1:8765 | FastAPI + 浏览器端 Agent；`--port`、`--no-browser`、`--reload` |
 | 超轻量远控 Lite | `python lite/lite_main.py` | http://127.0.0.1:8733 | 极简后端 + 零 CDN 单文件前端；`--port`、`--no-browser`、`--reload` |
 | 命令行 CLI | `python pyqt/cli_main.py` | 无 | 交互式 Agent（复用桌面内核，不依赖 GUI，需 httpx）；`--model/--workspace/--mode/--no-color`；会话内 `/help /mode /clear /history /quit` |
-| 同步服务器 | `python sync_server.py` | 0.0.0.0:8765 | 部署在用户自有服务器；环境变量 `SYNC_TOKEN`、`DRIFT_API_BASE`、`DRIFT_API_KEY`、`DRIFT_ALLOW_LOOPBACK` |
-| DSH 插件版 | Cordis 动态插件 `devai-2` | http://127.0.0.1:3080 | DeepSeek Harness Web GUI 套壳插件；`cordis_run devai-2/pkg-<N> run` |
+| 同步服务器 | `python sync_server.py` | 0.0.0.0:8765 | 部署在用户自有服务器；环境变量 `SYNC_TOKEN`、`DRIFT_API_BASE`、`DRIFT_API_KEY`、`DRIFT_ALLOW_LOOPBACK`、`DRIFT_MODEL`、`SYNC_DATA_DIR`（默认 `./sync_data`）。HTML 状态页 `/`（漂移状态 + 冷备续聊 + 远程指挥控制台）与 `/chat/page`（续聊页）。v8.24 起随仓库分发。 |
+| DSH 插件版 | Cordis 静态插件 `@deverai/hub`（宿主机 `~/.dsh/profiles/web/deverai-hub/`） | http://127.0.0.1:3080 | DeepSeek Harness Web GUI 套壳插件；代码在 DSH 宿主机，不在本仓库 |
 
 > 完整网页版与 sync_server 默认端口同为 8765；同一台机器同时运行需用 `python webui/web_main.py --port 8766` 或给 sync_server 改端口错开。
 
@@ -127,7 +129,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | 模块 | 职责 |
 |------|------|
 | `agent.py` | Agent 循环：流式对话、工具调用循环、上下文压缩、子Agent 委派、产物入库、安全规则注入 |
-| `tools.py` | 工具注册中心：文件/命令/资产/AOE/端口/自研工具/浏览器/exe/截图等 55 个工具处理器、审批门、路径保护、工具裁剪 |
+| `tools.py` | 工具注册中心：文件/命令/资产/AOE/端口/自研工具/浏览器/exe/截图等 87 个工具处理器、审批门、路径保护、工具裁剪 |
 | `experts.py` | 专家团编排：总司令规划、DAG 分层执行、反馈回收、副驾驶、工具审核 |
 | `planner.py` | AOE 规划器：DAG 规划、拓扑分层、并行执行、超时熔断、资产复用拦截 |
 | `context.py` | 子Agent 上下文压缩（超阈值压缩为 system 摘要） |
@@ -138,6 +140,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `storage.py` | JSON 原子持久化（唯一临时名 + `os.replace`） |
 | `errors.py` | 错误日志：运行时错误统一写根目录 `Err.log`；读取/清空接口 |
 | `err_mirror.py` | 防呆数据库：记录工具失败特征，生成代码前注入提示词 |
+| `memory.py` | Agent 长期记忆库（v8.18）：四类条目（fault/lesson/preference/knowledge）、bigram 检索注入、memory_read/memory_record 工具、漂移合体按 id+相似度去重 |
 | `codename.py` | 大代号/相对路径安全映射（内存不落盘） |
 | `modes.py` | 三大模式：流量模式、肝完睡觉（目标达成→倒计时→关机/休眠）、Token 计费 |
 | `locks.py` | 租约锁与文件所有权（TTL+heartbeat+Reaper；`_norm` 路径规范化；过期自愈） |
@@ -157,9 +160,12 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `drift.py` | 漂移状态机：project_id、退出登记、开机检查、漂移回本地复位 |
 | `sync.py` | 快照加密（Fernet/zlib 冷备）、推送/拉取/漂移接口、密钥排除 |
 | `sync_queue.py` | 同步队列：变更标记、流量模式挂起/关闭时冲刷 |
+| `sessions.py` | 多会话标签（v8.16）：会话索引 + 每会话历史文件的切换/持久化（切换前保存、切换后回放） |
+| `terms.py` | 终端环境池（v8.18）：持久 cwd+env 轻量会话（`data/term_envs.json` 原子写） |
 | `remote_cmd.py` | 远程指挥客户端：后台长轮询、命令执行、有界结果队列 |
 | `browser.py` | 无头浏览器控制（open/read/screenshot/elements；SSRF 校验、有界流式读取） |
 | `browser_ctl.py` | 直接操控浏览器：纯标准库 CDP 客户端（launch/navigate/click/type/press_keys/close） |
+| `browser_devtools.py` | F12 开发者工具（v8.14）：CDP Networks/Storage/Console/Sources 面板 |
 | `win_automate.py` | Win32 外部程序自动化原语（ctypes，非 Windows 安全降级） |
 | `app_shot.py` | Python 应用截图：运行脚本→找窗口→QScreen 截图→杀进程（跨线程 Qt 抓图） |
 | `tool_journal.py` | 外部 exe 操作记录（`data/ui_automation_journal.jsonl`） |
@@ -175,7 +181,6 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `trace_preview.py` | 轨迹详情预览对话框（缩放、拖动、置顶、元素选择引用） |
 | `notepad.py` | 跨轮暂存（`data/notepad.json`，多 key） |
 | `workspace_config.py` | 工作区级设置（`data/workspaces/{hash}.json`） |
-| `_v83_patch_panels.py` | 面板补丁模块（兼容保留） |
 | `deverai_integrity.py` | DeveraiIntegrityService：HKDF + HMAC-SHA256 防篡改签名服务 |
 | `dashscope.py` | DashScope（通义万相）API 客户端：文生图/图生图/视频生成（httpx 直调 REST，零 SDK 依赖） |
 | `ui_inspect.py` | UI 元素检视与可靠交互：枚举子窗口/控件、按文本类名定位控件、控件级点击/输入/读取（ctypes Win32，替代脆弱坐标点击） |
@@ -214,7 +219,9 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `js/agent.js` | 浏览器端 Agent 循环：工具调用、上下文守门、快照轮次、工具裁剪 |
 | `js/tools.js` | 网页版工具定义与执行分发（38 个工具）、危险命令前端判定、审批 |
 | `js/chat.js` | 聊天渲染：消息卡片、工具卡片、审批卡、GuardBanner、快照对话框 |
-| `js/panels.js` | 右侧面板/设置/模型注册表/资产银行/快照推送 |
+| `js/panels.js` | 右侧面板/设置/模型注册表/资产银行/快照推送/安全中心/外部 API 清单/Git 分支实验面板 |
+| `js/memory.js` | Agent 长期记忆（v8.22）：IndexedDB 四类记忆、本地打分零 API 成本召回 top-5、memory_save/search/list/delete 工具 |
+| `js/sessions.js` | 多会话标签条（v8.16）：聊天面板顶部标签的打开/切换/关闭（会话数据在 IndexedDB，按 taskId 隔离） |
 | `js/fs.js` | 文件系统访问（FSS 直连 + 桥模式，含前端路径保护） |
 | `js/trace.js` | 工作轨迹视图（时间线/标记/区间/筛选/详情预览） |
 | `js/devtools.js` | API 控制台：请求记录、curl 构造与打码 |
@@ -230,6 +237,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 |------|------|
 | `lite/lite_main.py` | Lite 版入口（极简后端 + 零 CDN 单文件前端） |
 | `lite/app/lite_server.py` | Lite 极简后端（鉴权 + LLM 代理 + 文件桥 + 命令桥） |
+| `lite/app/codename.py` | Lite 大代号/相对路径映射（独立副本） |
 | `lite/app/config.py` | Lite 服务端配置（独立副本，APP_DIR 指向项目根） |
 | `lite/app/security.py` | Lite 安全模块（危险命令检测，独立副本） |
 | `lite/app/storage.py` | Lite JSON 持久化（独立副本） |
@@ -245,12 +253,13 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `pyqt/main.py` / `pyqt/cli_main.py` | 桌面版与 CLI 入口（见第 3 节） |
 | `webui/web_main.py` | 完整版网页版入口（见第 3 节） |
 | `lite/lite_main.py` | Lite 版入口（见第 3 节） |
-| `sync_server.py` | 同步服务器（快照/冷备续聊/漂移/远程指挥/HTML 状态页） |
-| `tests/test_smoke.py` | 完整版网页版 Host Server 冒烟 |
-| `tests/test_lite.py` | Lite 版冒烟 |
-| `tests/test_desktop.py` | 桌面版冒烟（含漂移/锁/快照回归） |
-| `tests/test_gui.py` | GUI offscreen 实例化回归（退出码 0 为通过） |
-| `tools/svg_picker.py` | SVG 图标挑选工具（自用开发工具，需 PySide6） |
+| `sync_server.py` | 同步服务器入口（快照存取/冷备续聊/漂移状态/远程指挥 + HTML 状态页，见第 3 节；v8.24 补建） |
+| `tests/test_desktop_offscreen.py` | 桌面版离屏回归（模块导入/主窗口/多会话/终端环境池/安全中心） |
+| `tests/test_smoke_servers.py` | 服务端真实冒烟（lite + webui + sync_server 起进程端到端） |
+| `_audit_tmp.py` | 一键回归入口（gui/server/all 子命令顺序跑两套测试） |
+
+> 历史注记：早期文档曾列出 `tests/test_smoke.py` 等四个旧测试文件与 `tools/svg_picker.py`，以上文件当前均不在本仓库中。
+> `sync_server.py` 曾因跨机器工作区差异在本副本缺失（v8.19 按「文档加注记而非补文件」处理），v8.24 按用户指令补建并随仓库分发（裁决见 Fact.md）。
 
 ---
 
@@ -271,6 +280,8 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `tool_fail_count.json` | 工具失败计数（工具医生用） |
 | `models.json` | 模型注册表与打分 |
 | `err_mirror.json` | 防呆数据库（报错特征） |
+| `agent_memory.json` | Agent 长期记忆库（v8.22 memory.py，四类条目，上限 300 条） |
+| `term_envs.json` | 终端环境池持久化（v8.18 terms.py，cwd+env 轻量会话） |
 | `ctx_bans.json` | 守门专家永久禁引块 |
 | `notepad.json` | Agent 跨轮暂存 |
 | `theme_custom.json` | 用户自定义主题 |
@@ -290,11 +301,13 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 
 ### 5.2 同步服务器工作目录（部署在用户自有服务器时）
 
+默认目录 `./sync_data`（环境变量 `SYNC_DATA_DIR` 可改），节点注册表与命令队列/结果为进程内存态（不落盘）。
+
 | 文件 | 内容 |
 |------|------|
-| `snapshots.json` | 主快照（加密或明文冷备，取决于配置） |
-| `cold.json` | 无口令冷备副本（冷备 Agent 续聊用，恒为历史超集） |
-| `drift_state.json` | 服务器端漂移状态（project_id/unacked 计数等） |
+| `snapshots.json` | 主快照容器 `{data, cold, updated_at}`（保持客户端入参格式原样写回，加密或无口令取决于客户端配置） |
+| `cold.json` | 无口令冷备副本（冷备 Agent 续聊用，恒为历史超集；/chat 续聊消息追加于此） |
+| `drift_state.json` | 服务器端漂移状态（project_id/active/unacked_count 等） |
 
 ---
 
@@ -304,7 +317,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 
 ### 6.1 核心架构与运行模型
 
-1. **UI 用普通 Python**：PyQt5 桌面应用为主形态，Agent（对话、工具编排、规划、资产、模式）全部在 Python 进程内运行；命令行与文件操作走 Python 原生能力，不依赖浏览器 File System Access 或 HTTP 桥。
+1. **UI 用普通 Python**：PyQt6 桌面应用为主形态，Agent（对话、工具编排、规划、资产、模式）全部在 Python 进程内运行；命令行与文件操作走 Python 原生能力，不依赖浏览器 File System Access 或 HTTP 桥。
 2. **命令行操作已有文件**：命令工具用 `asyncio.create_subprocess_shell` 在本地进程直接执行，`cwd` 限定工作区，支持超时熔断、逐行流式回传，操作的是工作区内的真实文件。
 3. **LLM 接入**：OpenAI 兼容 `/chat/completions`（tools + streaming，httpx），兼容 DeepSeek/Kimi/智谱/Ollama。API Key 仅存本机 `data/config.json`。用户已批准引入全局 AI Agent（记录于 `Fact.md`）。
 4. **Agent 线程模型**：Agent 在后台线程的 asyncio loop 运行，事件经 `Queue` 泵到 UI 线程（QTimer 50ms 轮询）；审批门由 UI 弹对话框、经 `loop.call_soon_threadsafe` 唤醒。
@@ -325,7 +338,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 39. **配置开关三层贯通**：任何功能开关必须同时打通三层——`config.py` 字段定义 → `tools.build_tool_defs` 工具暴露 → `settings_dialog` 设置面板展示；缺一层即静默失效。
 40. **线程退出与竞态红线**：临时 QThread 必须注册进模块级保活集合防 GC，退出路径有界 `wait(2500ms)`；Agent 线程用提交时快照跑；`run_final` 覆盖历史前必须把本会话已合并的漂移消息重新并回（去重键防翻倍）。
 41. **密钥排除穷举**：快照/导出/对外暴露的密钥排除必须逐字段穷举（api_key/sync_password/sync_token/drift_api_key/search_api_key），`to_public()` 统一掩码。
-42. **双入口并存架构**：桌面版与网页版作为独立入口并存，功能对等但代码独立；`main.py` 只启动 PyQt5 桌面应用，`web_main.py` 只启动 FastAPI + uvicorn 并自动打开浏览器。
+42. **双入口并存架构**：桌面版与网页版作为独立入口并存，功能对等但代码独立；`main.py` 只启动 PyQt6 桌面应用，`web_main.py` 只启动 FastAPI + uvicorn 并自动打开浏览器。
 43. **网页版架构边界**：服务端 `app/` 严格保持"三件事"——下发 UI、验证身份、无状态转发（LLM 代理 + 本地资源桥）；Agent 逻辑全部在浏览器端 JS 执行；API Key 只存在于浏览器 localStorage。
 44. **SVG 图标系统**：全 UI 禁用 emoji。网页版用 `static/icons/` + `static/js/icons.js` 内联 SVG；桌面版用 `desktop/icons.py` 的 `QSvgRenderer` 渲染 SVG。
 45. **相对路径安全（大代号机制）**：AI 视角下工作区文件只显示大代号（codename），AI 写文件/命令只能用相对路径，绝对路径由系统层翻译；代号映射存内存不落盘。
@@ -445,6 +458,41 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 94. **元素选择引用**：详情按「角色/时间/类型/摘要/详情」五元素分块，每块带「引用」按钮逐元素引用；引用文本统一 `[标签] 内容`；与「引用选区」「引用全部」并存。
 95. **缩放与健壮性双端对齐**：网页缩放档位统一 [80,100,120,150]；非法时间戳过滤、纯空白字段跳过、openPreview 空指针保护。
 
+### 6.11 多会话标签
+
+114. **多会话标签（产品形态）**：三版本均支持多会话并行——每个标签是一条独立命名、独立持久化的对话上下文；新建、切换、关闭三端齐备。能力梯度（v8.16.1 复检收敛措辞）：重命名——桌面（右键菜单）与 Lite（双击）支持，网页版标签即任务条目，管理走左栏列表；自动命名（首条用户消息摘要作标题）——桌面与 Lite 落地，网页版新建时强制 prompt 命名。开启功能时不破坏存量数据：旧的单会话历史首启自动迁入「默认会话」，用户无感升级。
+115. **隔离边界**：会话只隔离「对话历史」与跟随历史的视图（聊天区回放、工作轨迹重建）；工作区授权、模型注册表、主题、工具集、其他面板状态均为全局共享，不做按会话副本。运行模型不变：同一时刻全局只有一个 AI 回合在执行；AI 回合进行中禁止切换会话（网页版 v8.13 已有该守卫，桌面版补齐同样提示），防止流式输出写入错误会话视图。
+116. **桌面版形态**：ChatPanel 顶部横向标签条 + 尾部「新会话」按钮；右键菜单重命名/关闭（关闭最后一个标签=清空并保留空会话）；会话索引与会话历史分别落盘（索引单文件 + 每会话一个历史文件），沿用原子写与既有序列化约定；切换会话时以当前会话历史重建聊天区与轨迹面板。同步队列的 history 脏标记跟随切换后的活跃会话。
+117. **网页版与 Lite 形态**：网页版完整版复用既有任务存储（localStorage 任务索引 + IndexedDB 分会话消息），增量加「聊天面板顶部横向标签条」——列出已打开的会话（打开集 ∩ 现存任务，空集仅显活跃；v8.16.1 复检收敛措辞：当前实现为首启只列活跃一个标签），点选即已有的 switchTask 流程，标签上的关闭仅移除打开态不删数据（当前版本主界面不提供任务删除入口，「删除仍在左栏管理入口」为后续增强方向）。Lite 在浏览器本地存储中把单一历史键改为分槽（每会话一槽）+ 索引槽，界面同样加标签条与新建/重命名/关闭。
+118. **模块开关 `ENABLE_MULTI_SESSION`**：三版本各设同名开关（桌面 desktop/config.py 持久化字段、网页 core.js CFG_DEFAULT、Lite State.cfg），默认 True；关闭时隐藏全部标签入口并保持单会话行为与旧版一致（见 §7.1 / §7.3）。
+
+### 6.12 安全中心（v8.17 轻档聚合）
+
+<!-- 6.12 body unchanged below -->
+
+119. **产品定位**：把散落各处的安全能力聚合成可视化安全中心——状态卡片（命令/文件/网络/身份）+ 审计日志流水（含导出/清空）+ 核心开关聚合；轻档原则——不改底层删除语义、不加黑白名单/前缀放行/配额管理，纯 UI 聚合。
+120. **三版本形态**：桌面版设置对话框新增「Security」Tab（状态卡片 + 审计只读列表 + 导出/清空）；网页版设置面板新增安全中心分区（状态卡片 + 审计流水 + 导出/清空按钮）；Lite 新增只读审计日志查看区（顶部按钮触发，含清空）。审计数据源：webui/lite 的 `data/audit.jsonl`（`security.audit()` 追加写，P2-7 大小轮转），桌面版 `data/audit.jsonl`（同源 `audit.audit_log()` 接口）。
+121. **后端最小改动**：security.py 新增 `read_audit(tail)` 与 `clear_audit()` 两个纯函数（twin 同步）；webui/server.py 新增 `GET /api/security/audit` 与 `POST /api/security/audit/clear`；lite/lite_server.py 同步新增（孪生端点）；桌面版直接调用 `audit.list_audits()` 读本地文件。无新模块开关——安全中心始终可见（只读审计 + 强制开启的能力展示）。
+### 6.13 终端环境池 + 悬浮小助手 Agent 循环 + 系统专家（v8.18）
+
+122. **终端环境池（持久 cwd+env 轻量会话）**：命令行执行新增三可选参数——`env`（持久环境 id/name，继承 cwd 与环境变量）、`update_interval`（静默期到点心跳，K210 刷写场景）、`kill_after`（超时/停止后是否杀进程树）。未显式指定时按默认值执行并在结果中返回 `[WARN] 使用默认值：...`（AI 可见，下次可显式传参）。环境=轻量上下文（cwd+env），每条命令继承后新起进程（Windows 友好、无孤儿 shell）；持久化 `data/term_envs.json`（原子写）。后端 `/api/bridge/term/create|list|delete` + `run_command` 参数扩展；前端新增 `term_create/term_list/term_delete` 工具。桌面端独立 `desktop/terms.py` + `tool_run_command/_exec_command` 扩展。
+
+123. **悬浮小助手 Agent 循环（一次 LLM 调用自判模式）**：语音助手「小龙」升级为 Agent 循环入口——一次 LLM 调用输出 `{mode: chat|agent_loop|system_expert}` 头部标记：`chat`=单轮跑腿（直接答）；`agent_loop`=暂停主循环（软暂停·工具边界安全停靠）→ 小助手独立 `runPetAgent` 循环（独立 abort 控制器 / 独立 messages / 不污染主历史）→ 自动恢复；`system_expert`=只读查阅 Design/Techniques/Fact 回答系统问题。主循环软暂停原语（`agentPauseMain/agentResumeMain/agentWaitIfPaused`）+ 工具循环两处停靠点。
+
+124. **用户/Agent 共享系统专家**：系统专家是 experts 体系的一个角色，拥有系统知识（Design/Techniques/Fact 关键决策自动检索）+ 可读源码上下文，用户（悬浮小助手入口）和 Agent（`runPetAgent` 的 system_expert 模式）均可调用，大幅节省主循环上下文。
+
+### 6.14 Agent 记忆、出关审核、外部 API 与同步服务器落地（v8.22/v8.24）
+
+125. **Agent 长期记忆双端**：桌面 `desktop/memory.py`（文件式 `data/agent_memory.json`，四类条目 fault/lesson/preference/knowledge、scope global/local、bigram 相似度检索注入 system prompt、memory_read/memory_record 工具、漂移合体按 id+相似度去重，上限 300 条）；网页 `static/js/memory.js`（IndexedDB 存储四类记忆，本地打分零 API 成本，每轮自动召回 top-5 相关记忆注入，memory_save/search/list/delete 四工具，踩坑修复后沉淀 lesson）。开关：桌面 `ENABLE_AGENT_MEMORY`、网页 `ENABLE_MEMORY`。
+126. **出关审核（outbound gate）**：AI 向外传递最终内容（交付物/对外说明/邮件正文/发布文本）禁止直接写在聊天回复里出关，必须先调 `outbound_deliver` 工具——逐字复述用户原始要求（requirement）+ 给出完整内容（content），经聊天审核卡片批准后才出关；目标为 email 的内容仅存草稿，发送由用户在安全中心手动触发（AI 不能直发邮件）。开关 `ENABLE_OUTBOUND_GATE`。
+127. **外部 API 清单治理**：安全中心清单编辑器维护外部 API（名称/URL/Key/用途，密钥仅存浏览器本地），AI 经 `api_request` 工具调用（首次调用弹用户授权卡）；实际请求统一经服务端 `POST /api/llm/ext_proxy` 转发，带 SSRF 防护（环回/内网地址拒绝，`llm_allow_loopback` 可配）与 base_url 校验。
+128. **安全中心 heartbeat 泄露检查**：`POST /api/security/leak_scan` 一键检查 8 类本地工作区密钥泄露（OpenAI/AWS/GitHub/私钥等）+ 外部 API 清单厂商存活心跳；发现问题且配置 SMTP（服务端环境变量 `SMTP_HOST/SMTP_USER/SMTP_PASS`）且填了收件邮箱时可发送报告邮件；`GET /api/security/smtp_status` 探测发件配置状态。
+129. **同步服务器落地（v8.24）**：`sync_server.py` 补建随仓库分发——`/push`/`/pull` 双格式原样写回（决策106）；`/chat` 冷备 Agent 续聊（`_CHAT_LOCK` 读→LLM→写三段式防 lost update、每轮 `unacked_count+1`、与 `/push` 文件写互斥、加密主快照永不降级只在无口令格式时回写）；`/drift/begin|status|finish` 状态机；`/cmd/register|poll|heartbeat|result|dispatch|nodes|results` 远程指挥（节点 TTL 2 分钟、命令队列 maxlen=100、结果 TTL 10 分钟且体限 1MB，惰性 GC）；HTML `/`（漂移状态 + 冷备会话续聊 + 远程指挥控制台，危险命令勾选 danger_ok）与 `/chat/page`（手机/平板续聊页），零 CDN 无 emoji。鉴权同决策 99：`SYNC_TOKEN`/`X-Sync-Token`（HTML 页可用 `?token=`）、未设令牌仅环回、XFF 存在强制令牌、CORS 收紧环回源、请求体按端点分级限 64MB/1MB/2MB。
+130. **Git 分支实验（v8.21 引入，v8.24 更名）**：git worktree 多工作树能力——bridge.py 四端点（list 只读；create/switch/remove 需 `danger_ok` 严格审批，路径限定 `<workspace>/.worktrees/<name>`，`_safe_name` 拦 `.`/`..`）+ 网页「分支实验」面板 + worktree_list/worktree_switch 工具 + 系统提示词感知。更名原因：本项目术语 **WorkTree = 独立安全备份审核**（特点3，checkpoint/session_snap/dep_tree/audit 三层防线），与 git worktree 不是同一概念，避免混淆（内部标识符/端点路径保留 worktree 字样，仅 UI 文案与提示词更名）。
+
+---
+
+
 ---
 
 ## 7. 模块开关与阈值
@@ -462,10 +510,12 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `ENABLE_SYNC` | True | 快照导出导入/远端同步 |
 | `ENABLE_MODES` | True | 三大模式 |
 | `ENABLE_ERR_MIRROR` | True | 防呆数据库 |
+| `ENABLE_AGENT_MEMORY` | True | Agent 长期记忆库（memory.py：教训沉淀+检索注入+漂移合体） |
 | `ENABLE_APPROVAL` | True | 命令审批门 |
 | `ALLOW_AI_DELETE` | False | 允许 AI 删除文件（危险；开启后 delete_file 才暴露给 LLM） |
 | `ENABLE_CTX_EXPERT` | True | 上下文守门专家 |
 | `ENABLE_TRAY` | True | 系统托盘 |
+| `ENABLE_MULTI_SESSION` | True | 多会话标签（v8.16，聊天区顶部 QTabBar；关闭回单会话） |
 | `minimize_to_tray` | False | 关闭时最小化到托盘 |
 | `ENABLE_STREAM_COMPLETE` | True | 逐行流式自动补全 |
 | `ENABLE_EXPERTS` | True | 专家团 |
@@ -516,6 +566,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `ui_automation_exe` | 空 | 唯一允许 AI 启动的外部程序路径 |
 | `ENABLE_EXE_JOURNAL` | True | 外部 exe 自动化操作记录 |
 | `ENABLE_BROWSER_CTL` | True | 直接操控浏览器（CDP） |
+| `ENABLE_BROWSER_DEVTOOLS` | True | F12 开发者工具（CDP Networks/Storage/Console/Sources） |
 | `ENABLE_AUDIT_LOG` | True | 回退审核日志 |
 | `ENABLE_FILE_PARTITION` | True | 文件分区规划并发调度 |
 | `ENABLE_TRACE_ADVANCED` | True | 工作轨迹高级能力 |
@@ -540,6 +591,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | 字段 | 默认 | 说明 |
 |------|------|------|
 | `host` / `port` | 127.0.0.1 / 8732 | 服务端配置默认（实际端口由启动参数注入） |
+| `DEVERAI_DATA_DIR`（环境变量） | 未设置 | v8.16：数据目录隔离（冒烟测试/多实例），仅进程级，不落盘 |
 | `secret` | 自动生成 | 会话签名密钥（首次启动生成） |
 | `session_ttl_hours` | 72 | 会话有效期 |
 | `allow_register` | True | 是否开放注册 |
@@ -559,7 +611,10 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `approval_mode` | danger | 审批四模式 |
 | `embedding_level` / `ENABLE_EMBEDDING_API` / `embedding_model` | char / True / 空 | 三级匹配 |
 | `low_memory_mode` | False | 低内存模式 |
+| `ENABLE_MULTI_SESSION` | True | 多会话标签（v8.16；关闭隐藏聊天区顶部标签条） |
 | `ENABLE_SUGGEST` | True | 建议系统 |
+| `ENABLE_MEMORY` | True | Agent 长期记忆（memory.js，IndexedDB 四类记忆 + 自动召回） |
+| `ENABLE_OUTBOUND_GATE` | True | 出关审核（outbound_deliver：复述要求 + 审核卡批准后出关） |
 | `ENABLE_APP_SHOT` / `ENABLE_UI_REVIEW` / `visual_expert_model` | True / True / 空 | 应用截图与视觉审查 |
 | `ENABLE_CHECKPOINT/SESSION_SNAP/DEP_TREE/CTX_EXPERT` | True | 可靠性四件套 |
 | `ENABLE_WEB_SEARCH` / `ENABLE_BROWSER` / `ENABLE_NOTEPAD` | True | 搜索/浏览器/暂存 |

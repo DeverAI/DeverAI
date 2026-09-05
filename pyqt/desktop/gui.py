@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QDockWidget, QMessageBox, QMenu, QDialog, QFileDialog, QFrame,
     QStatusBar, QToolBar, QComboBox, QDialogButtonBox, QFormLayout,
     QSystemTrayIcon, QListWidget, QListWidgetItem, QProgressBar, QStackedWidget,
+    QTabBar, QInputDialog,
 )
 
 from . import sync as sync_mod
@@ -32,6 +33,7 @@ from . import session_snap as snap_mod      # v8.3 任务级快照
 from . import dep_tree as deps_mod          # v8.3 依赖树
 from . import suggest as suggest_mod        # v8.3 建议系统
 from . import drift as drift_mod            # v8.6 算力漂移状态机
+from . import sessions as sessions_mod      # v8.16 多会话标签存储
 from .agent import Agent
 from .icons import icon as svg_icon, set_theme_colors as icons_set_theme
 from .locks import get_locks
@@ -328,10 +330,20 @@ class EditorWidget(QTabWidget):
         self.ai_status.emit("AI 补全中…")
         # worker 不设 parent：避免窗口关闭时被父对象"活销毁"
         self._worker = CompletionWorker(self.cfg, lang_for(tab.path), prefix, tab)
-        self._worker.finished.connect(self._worker.deleteLater)
+        # v8.15 检修：deleteLater 后 self._worker 变悬挂 C++ 指针，下次按键
+        # isRunning() 抛 RuntimeError（PyQt6 槽内未捕获 → qFatal 整应用崩溃）
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.line_ready.connect(self._on_completion_line)
         self._worker.all_done.connect(self._on_completion_done)
         self._worker.start()
+
+    def _on_worker_finished(self):
+        """v8.15：先清引用再 deleteLater，杜绝悬挂访问。"""
+        w = self.sender()
+        if w is not None:
+            if self._worker is w:
+                self._worker = None
+            w.deleteLater()
 
     def _on_completion_line(self, chunk, tab):
         """逐行流式展示：首段插入 ghost，后续段追加到 ghost 尾部（文档无变化不打断）。"""
@@ -566,10 +578,11 @@ class EditorWidget(QTabWidget):
             self._completion_timer.stop()
             self._clear_ghost(tab)
         tab.editor.deleteLater()
-        # v8.14：先 removeTab 再 pop——顺序反了会触发 currentChanged 时
-        # self.tabs 与控件索引错位，_active 瞬时指向错误标签
-        self.removeTab(idx)
+        # v8.15 检修：必须先 pop 再 removeTab——removeTab 同步触发 currentChanged，
+        # 此时若 tabs 仍含旧项，_sync_active 会用新索引映射旧列表，_active 指向
+        # 正在关闭的标签；其 editor 已 deleteLater，后续保存即 RuntimeError
         self.tabs.pop(idx)
+        self.removeTab(idx)
 
     def _to_rel(self, path: str) -> str:
         """绝对路径 → 相对工作区路径（斜杠分隔，供快照存储）；不在工作区内返回空串。"""
@@ -616,6 +629,11 @@ class EditorWidget(QTabWidget):
                 save_text(path, tab.editor.toPlainText())
             except OSError as e:
                 QMessageBox.warning(self, "保存失败", str(e))
+                return
+            # v8.15 检修：另存成功后同步 tab 状态——否则 Ctrl+S 会把内容覆盖回旧文件
+            tab.path = path
+            tab.dirty = False
+            self.setTabText(self.tabs.index(tab), path.replace("\\", "/").split("/")[-1])
 
     def current_path(self) -> str:
         return self._active.path if self._active else ""
@@ -640,8 +658,32 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
+        # v8.16：会话标签条（ENABLE_MULTI_SESSION 开启且存储可用时由主窗口填充显示）
+        sess_host = QWidget()
+        sess_host.setObjectName("sessionbarhost")
+        sb = QHBoxLayout(sess_host)
+        sb.setContentsMargins(0, 0, 0, 0)
+        sb.setSpacing(4)
+        self.session_tabs = QTabBar()
+        self.session_tabs.setObjectName("sessiontabs")
+        self.session_tabs.setExpanding(False)
+        self.session_tabs.setDrawBase(False)
+        self.session_tabs.setMovable(False)
+        self.session_tabs.setUsesScrollButtons(True)
+        self.session_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        sb.addWidget(self.session_tabs, 1)
+        self.sess_new_btn = QPushButton()
+        self.sess_new_btn.setObjectName("flatbtn")
+        self.sess_new_btn.setIcon(svg_icon("plus", 14))
+        self.sess_new_btn.setFixedSize(24, 24)
+        self.sess_new_btn.setToolTip("新建会话")
+        sb.addWidget(self.sess_new_btn)
+        self.session_bar = sess_host
+        self.session_bar.hide()
+
         # v8：英雄欢迎区（首条消息后自动隐藏）
         self.hero = HeroWidget()
+        layout.addWidget(self.session_bar)   # v8.16：标签条置于聊天区最顶部
         layout.addWidget(self.hero, 1)
         # v8.3：建议条（TRAE CUE 式，消息发送时展示 AI 精选建议）
         self.suggest_box = QFrame()
@@ -1172,6 +1214,31 @@ class ChatPanel(QWidget):
         self.inp.setTextCursor(cur)
         self.inp.setFocus()
 
+    def replay_history(self, msgs):
+        """v8.16：按持久化协议消息重建聊天视图（会话切换用）。
+
+        只回放 user/assistant 文本条目；tool/system 等协议内容由工作轨迹面板呈现
+        （trace_panel.set_history 与本方法由主窗口成对调用）。
+        """
+        self.clear()
+        for m in msgs or []:
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "")
+            content = m.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if role == "user":
+                self.add_user(content)
+            elif role == "assistant":
+                self.new_ai()
+                self.append_ai(content)
+                self.finish_ai()
+        if msgs:
+            # 历史非空即视为有内容（即使全部是 tool/system 条目）——隐藏欢迎区
+            self._hide_hero()
+            self.view.moveCursor(QTextCursor.MoveOperation.End)
+
 
 _CHAT_CSS = ""  # v7：由 _apply_theme() 从 themes_mod.chat_css() 动态设置
 
@@ -1513,6 +1580,10 @@ class SleepDialog(QDialog):
         self.timer.stop()
         self._exec()
 
+    def done(self, r):  # v8.15 检修：Esc/系统关闭走 reject 不经过 _cancel——
+        self.timer.stop()  # 定时器随对话框存活于主窗口下，不停会在到点后照常执行关机/休眠
+        super().done(r)
+
     def _exec(self):
         # v6 算力漂移：关机/休眠前先推送完整工作状态（阻塞等待，确保漂移成功）
         if callable(self.on_before_power):
@@ -1710,6 +1781,16 @@ class DeverAIApp(QMainWindow):
             self.resize(1400, 880)
         self.cfg = get_config()
         self.vault = vault_mod.Vault()
+        # v8.16：多会话存储先于历史加载——开关关闭（或初始化失败）时保持 None，
+        # _load_history/_save_history 走旧 desktop_history.json 单会话路径
+        self.sessions = None
+        if getattr(self.cfg, "ENABLE_MULTI_SESSION", True):
+            try:
+                self.sessions = sessions_mod.SessionStore()
+                self.sessions.ensure()
+            except Exception as e:
+                log_error("多会话模块初始化失败，退回单会话", e)
+                self.sessions = None
         self.history: list = []
         self._load_history()
         self._force_close = False   # v4: 托盘驻留时区分"隐藏"与"真退出"
@@ -1841,6 +1922,13 @@ class DeverAIApp(QMainWindow):
         mp.manage_requested.connect(self._open_settings)
         self.chat.attach_requested.connect(self._attach_file)
         self._refresh_model_label()
+        # v8.16：多会话标签条接线（存储不可用=开关关闭时保持隐藏）
+        if self.sessions is not None:
+            self.chat.session_tabs.currentChanged.connect(self._on_session_tab_changed)
+            self.chat.session_tabs.customContextMenuRequested.connect(self._on_session_tab_menu)
+            self.chat.sess_new_btn.clicked.connect(self._new_session)
+            self.chat.session_bar.show()
+            self._refresh_session_tabs()
         # v8：Pannel 右栏（可左右拖动改宽，dock 分割条原生支持）
         self.dock_panel = QDockWidget("Summary", self)
         self.dock_panel.setObjectName("questpaneldock")
@@ -2468,6 +2556,7 @@ class DeverAIApp(QMainWindow):
             # v4：主题/窗口限制/托盘可能变更
             self._apply_theme()
             self._apply_size_limits()
+            self._apply_multi_session_switch()   # v8.16.1：多会话开关即时生效（决策 118）
             self.sync_q.mark_dirty("settings")
             if was_traffic and not self.cfg.traffic_mode:
                 # 关闭流量模式：立即冲刷同步队列
@@ -2562,6 +2651,10 @@ class DeverAIApp(QMainWindow):
         composed = "\n\n".join(parts)
         self.chat.inp.clear()
         self.chat.add_user(text, quote_count=len(quotes))
+        # v8.16：空白名「新会话」且尚无历史时，用首条消息摘要自动命名并刷新标签
+        if self.sessions is not None and self.sessions.autotitle_if_blank(
+                self.sessions.active_id, text):
+            self._refresh_session_tabs()
         # 本条用户消息所属对话块 uid：供消息按钮「禁止自动引用」使用
         uid = ctx_expert.block_uid(composed)
         self.chat.set_pending_uid(uid)
@@ -2841,6 +2934,136 @@ class DeverAIApp(QMainWindow):
             self._suggest_processed, self._suggest_total = panel.counts
             self._update_statusbar()
 
+    # ------------------ v8.16 多会话标签 ------------------
+    def _apply_multi_session_switch(self):
+        """v8.16.1：设置接受后即时重评 ENABLE_MULTI_SESSION（此前需重启才生效）。
+
+        AI 回合进行中不切换存储形态（replay 会冲掉流式视图），提示用户稍后再开设置；
+        关闭方向依赖决策 116 的镜像写（活跃会话已实时镜像旧档），回落零丢失。
+        """
+        want = bool(getattr(self.cfg, "ENABLE_MULTI_SESSION", True))
+        if self._busy:
+            self.statusBar().showMessage("AI 回合进行中：多会话开关请稍后重新打开设置以生效", 4000)
+            return
+        if want:
+            if self.sessions is None:
+                try:
+                    store = sessions_mod.SessionStore()
+                    store.ensure()
+                    self.sessions = store
+                    self._load_history()
+                    self.chat.replay_history(self.history)
+                    self._refresh_session_tabs()
+                except Exception as e:
+                    log_error("多会话存储初始化失败，保持单会话", e)
+                    self.sessions = None
+            self.chat.session_bar.setVisible(self.sessions is not None)
+        elif self.sessions is not None:
+            self._save_history()          # 当前内存态补一次落盘（槽位+镜像）
+            self.sessions = None          # 回落后 _load_history 读旧档（即刚才的镜像）
+            self._load_history()
+            self.chat.replay_history(self.history)
+            self.chat.session_bar.hide()
+
+    def _refresh_session_tabs(self):
+        """全量重绘标签条（会话数量为个位~十位，无需增量优化）。"""
+        if self.sessions is None:
+            return
+        bar = self.chat.session_tabs
+        bar.blockSignals(True)
+        while bar.count():
+            bar.removeTab(0)
+        active = self.sessions.active_id
+        for s in self.sessions.sessions():
+            idx = bar.addTab(s["name"])
+            bar.setTabData(idx, s["id"])
+            bar.setTabToolTip(idx, f"{s['name']}\n创建 {s['created_at']} · 更新 {s['updated_at']}")
+            if s["id"] == active:
+                bar.setCurrentIndex(idx)
+        bar.blockSignals(False)
+
+    def _on_session_tab_changed(self, idx: int):
+        if self.sessions is None or idx < 0:
+            return
+        sid = self.chat.session_tabs.tabData(idx)
+        if not sid or sid == self.sessions.active_id:
+            return
+        if not self._switch_session(sid):
+            self._refresh_session_tabs()   # 切换被拒绝 → 标签视觉复位到真实活跃项
+
+    def _on_session_tab_menu(self, pos):
+        if self.sessions is None:
+            return
+        bar = self.chat.session_tabs
+        idx = bar.tabAt(pos)
+        if idx < 0:
+            return
+        sid = bar.tabData(idx)
+        menu = QMenu(self)
+        menu.addAction("重命名", lambda: self._rename_session(sid))
+        menu.addAction("关闭会话", lambda: self._close_session(sid))
+        menu.exec(bar.mapToGlobal(pos))
+
+    def _new_session(self):
+        if self.sessions is None:
+            return
+        if self._busy:
+            self.statusBar().showMessage("AI 回合进行中，请先停止再新建会话", 4000)
+            return
+        self._save_history()
+        self.sessions.create("")
+        self._load_history()                    # 活跃已指向新会话 → 载入空历史并重建轨迹
+        self.chat.replay_history(self.history)  # 空列表 → 复位欢迎区
+        self._refresh_session_tabs()
+
+    def _rename_session(self, sid: str):
+        if self.sessions is None:
+            return
+        s = self.sessions.find(sid)
+        if s is None:
+            return
+        name, ok = QInputDialog.getText(self, "重命名会话", "名称：", text=s["name"])
+        if ok and self.sessions.rename(sid, name):
+            self._refresh_session_tabs()
+
+    def _close_session(self, sid: str):
+        """关闭标签=移除会话条目（不删历史文件，可手动从 data/chat_history 找回）。"""
+        if self.sessions is None:
+            return
+        if len(self.sessions.sessions()) <= 1:
+            # 最后一个会话不可移除——等价「清空对话」保留会话本身（Design 决策 116）
+            self._clear_history()
+            self.statusBar().showMessage("最后一个会话已清空内容（会话保留）", 4000)
+            return
+        closing_active = sid == self.sessions.active_id
+        if closing_active:
+            if self._busy:
+                self.statusBar().showMessage("AI 回合进行中，请先停止再关闭该会话", 4000)
+                return
+            self._save_history()
+        self.sessions.remove(sid)               # 活跃被关时 Store 自动切到相邻会话
+        if closing_active:
+            self._load_history()
+            self.chat.replay_history(self.history)
+        self._refresh_session_tabs()
+
+    def _switch_session(self, sid: str) -> bool:
+        """切换活跃会话：先落盘当前，再载入目标（聊天区回放 + 轨迹重建）。"""
+        if self.sessions is None or sid == self.sessions.active_id:
+            return False
+        if self._busy:
+            # Design 决策 115：同一时刻全局仅一个 AI 回合；运行中切换会让流式事件
+            # 写错会话视图、审批上下文错绑——与网页版 v8.13 守卫同策略
+            self.statusBar().showMessage("AI 回合进行中，请先停止再切换会话", 4000)
+            return False
+        self._save_history()
+        self.sessions.set_active(sid)
+        self._load_history()
+        self.chat.replay_history(self.history)
+        s = self.sessions.find(sid)
+        self.statusBar().showMessage(f"已切换到会话：{s['name'] if s else sid}", 3000)
+        return True
+
     def _clear_history(self):
         self.history = []
         self._save_history()
@@ -2856,7 +3079,11 @@ class DeverAIApp(QMainWindow):
 
     def _load_history(self):
         try:
-            self.history = load_json(HISTORY_PATH, []) or []
+            if self.sessions is not None:
+                # v8.16：从活跃会话的历史文件加载（首启迁移旧单会话数据由 Store.ensure 完成）
+                self.history = self.sessions.load_history(self.sessions.active_id)
+            else:
+                self.history = load_json(HISTORY_PATH, []) or []
         except Exception:
             self.history = []
         # v8.8：加载历史后重建轨迹
@@ -2865,7 +3092,18 @@ class DeverAIApp(QMainWindow):
 
     def _save_history(self):
         try:
-            save_json(HISTORY_PATH, self.history)
+            if self.sessions is not None:
+                # v8.16：写当前活跃会话文件 + 镜像一份到旧 desktop_history.json——
+                # 用户之后关闭多会话开关时，仍能看到最近活跃会话的内容（回退安全方向）
+                sid = self.sessions.active_id
+                self.sessions.save_history(sid, self.history)
+                self.sessions.touch(sid)
+                try:
+                    save_json(sessions_mod.LEGACY_HISTORY_PATH, self.history)
+                except Exception:
+                    pass
+            else:
+                save_json(HISTORY_PATH, self.history)
         except Exception:
             pass
         self.sync_q.mark_dirty("history")
@@ -3090,6 +3328,21 @@ class DeverAIApp(QMainWindow):
                         self._refresh_task_panel()
                 except Exception:
                     pass
+            # v8.15 检修：以下事件类型此前已入队但事件泵无分支，被静默丢弃
+            # （快照提交提示不显示 / 专家文件冲突用户不可见 / UI 自动化被拦截无告警）
+            elif t == "note":
+                note = str(ev.get("note", "")).strip()
+                if note:
+                    self.chat.ai_note(note)
+            elif t == "expert_conflict":
+                self.chat.ai_note("[!] 专家文件冲突：" + str(ev.get("note", "")))
+                try:
+                    self.statusBar().showMessage(
+                        f"专家 {ev.get('expert_id', '')} 文件冲突，已转只读", 5000)
+                except Exception:
+                    pass
+            elif t == "ui_auto_block":
+                self.chat.ai_note("[!] UI 自动化已拦截：" + str(ev.get("note", "")))
         except Exception as e:
             log_error("UI 事件处理异常", e)
 
@@ -3238,10 +3491,16 @@ class DeverAIApp(QMainWindow):
         self._last_auto_drift = now
         t = self._drift_push("auto")
         if t is not None:
-            t.finished.connect(lambda th=t: (
-                self.statusBar().showMessage("✓ 自动算力漂移：工作状态已推送到服务器", 5000)
-                if getattr(th, "res", {}).get("ok")
-                else self.statusBar().showMessage("自动算力漂移失败（详见 Err.log）", 5000)))
+            # v8.15 检修：lambda 无接收者 QObject，QThread.finished 在工作线程 emit 时
+            # 直连执行——statusBar 跨线程操作 QWidget。改绑定方法走事件队列。
+            t.finished.connect(self._on_auto_drift_done)
+
+    def _on_auto_drift_done(self):
+        t = self.sender()
+        if getattr(t, "res", {}).get("ok"):
+            self.statusBar().showMessage("✓ 自动算力漂移：工作状态已推送到服务器", 5000)
+        else:
+            self.statusBar().showMessage("自动算力漂移失败（详见 Err.log）", 5000)
 
     def _drift_pull(self):
         """开机拉取：合并服务器冷备 Agent 期间追加的消息（from_server 标记，去重）。"""
@@ -3252,8 +3511,13 @@ class DeverAIApp(QMainWindow):
         t = DriftThread(self.cfg, "pull")
         _DRIFT_THREADS.add(t)
         t.finished.connect(lambda: _DRIFT_THREADS.discard(t))
-        t.finished.connect(lambda: self._drift_merge(t))
+        # v8.15 检修：_drift_merge 改写 history 并落盘，此前经 lambda 在工作线程执行，
+        # 与 UI 线程并发读写同一列表——绑定方法自动队列化到 GUI 线程
+        t.finished.connect(self._on_pull_done)
         t.start()
+
+    def _on_pull_done(self):
+        self._drift_merge(self.sender())
 
     def _drift_merge(self, t) -> bool:
         """合并服务器冷备产出。返回 True=成功（含无新增）；False=拉取失败或本地合并异常。"""
@@ -3319,8 +3583,12 @@ class DeverAIApp(QMainWindow):
         t = DriftThread(self.cfg, "status", pid)
         _DRIFT_THREADS.add(t)
         t.finished.connect(lambda: _DRIFT_THREADS.discard(t))
-        t.finished.connect(lambda th=t: self._on_drift_status(th))
+        # v8.15 检修：回调含 statusBar/模态框，必须队列化到 GUI 线程
+        t.finished.connect(self._on_startup_status)
         t.start()
+
+    def _on_startup_status(self):
+        self._on_drift_status(self.sender())
 
     def _on_drift_status(self, t):
         res = getattr(t, "res", {}) or {}
@@ -3359,8 +3627,12 @@ class DeverAIApp(QMainWindow):
         t = DriftThread(self.cfg, "pull")
         _DRIFT_THREADS.add(t)
         t.finished.connect(lambda: _DRIFT_THREADS.discard(t))
-        t.finished.connect(lambda th=t: self._drift_back_after_pull(th))
+        # v8.15 检修：同上，队列化到 GUI 线程
+        t.finished.connect(self._on_back_pull_done)
         t.start()
+
+    def _on_back_pull_done(self):
+        self._drift_back_after_pull(self.sender())
 
     def _drift_back_after_pull(self, t):
         # v8.7 审查修复：仅合并成功才复位漂移状态并解除只读；合并失败保持锁定，云端产出不丢

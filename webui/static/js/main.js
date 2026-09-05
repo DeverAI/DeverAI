@@ -3,10 +3,10 @@ document.addEventListener('DOMContentLoaded', () => {
   boot();
 });
 
-/* ---------- v8.6 主题系统（auto / light / dark，参考 DeepSeek Harness） ---------- */
-const THEME_ORDER = ['auto', 'light', 'dark'];
-const THEME_ICON = { auto: 'contrast', light: 'sun', dark: 'moon' };
-const THEME_LABEL = { auto: '自动（跟随系统）', light: '浅色', dark: '深色' };
+/* ---------- v8.6 主题系统（auto / light / cream / dark，黑米白三色 + 自动） ---------- */
+const THEME_ORDER = ['auto', 'light', 'cream', 'dark'];
+const THEME_ICON = { auto: 'contrast', light: 'sun', cream: 'coffee', dark: 'moon' };
+const THEME_LABEL = { auto: '自动（跟随系统）', light: '浅色（白）', cream: '暖米', dark: '深色（黑）' };
 
 function applyTheme(pref) {
   const t = THEME_ORDER.includes(pref) ? pref : 'auto';
@@ -34,7 +34,8 @@ function cycleTheme() {
   saveConfig();
   const mode = applyTheme(next);
   if (typeof TraceView !== 'undefined') TraceView._renderTimeline();
-  toast('主题：' + THEME_LABEL[next] + (next === 'auto' ? '（当前 ' + (mode === 'dark' ? '深色' : '浅色') + '）' : ''), 'ok');
+  const modeLabel = mode === 'dark' ? '深色' : (mode === 'cream' ? '暖米' : '浅色');
+  toast('主题：' + THEME_LABEL[next] + (next === 'auto' ? '（当前 ' + modeLabel + '）' : ''), 'ok');
 }
 
 async function boot() {
@@ -302,11 +303,20 @@ function wireUI() {
         x.classList.toggle('hidden', !selected);
       });
       if (t === 'files') Tree.refresh().catch(() => {});
+      if (t === 'worktree' && typeof WorkTreePanel !== 'undefined') WorkTreePanel.refresh();
     };
   });
+  // v8.21/v8.24：Git 分支实验面板（git worktree）按钮接线
+  if (typeof WorkTreePanel !== 'undefined') WorkTreePanel.wire();
 
   // 左侧导航：Tasks/Chats 切换会话；Trace/API 控制台切换中央视图；快捷入口真实接线
   $$('.ln-item').forEach((item) => {
+    // v8.20：键盘可达性 —— 静态项 HTML 已带 role/tabindex，这里挂 keydown
+    if (item.getAttribute('tabindex') !== '0') item.setAttribute('tabindex', '0');
+    if (!item.getAttribute('role')) item.setAttribute('role', 'button');
+    item.onkeydown = (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); item.click(); }
+    };
     item.onclick = () => {
       $$('.ln-item').forEach((x) => x.classList.remove('active'));
       item.classList.add('active');
@@ -365,6 +375,8 @@ function wireUI() {
   };
 
   $('#btn-new-task').onclick = () => {
+    // v8.16.1：运行中新建会把当前回合视区切进新任务——与切换同守卫（决策 115）
+    if (Agent.running) { toast('AI 运行中，请先停止再新建会话', 'err'); return; }
     showPrompt('新建任务名称', '', async (name) => {
       const label = String(name || '').trim();
       if (!label) return;
@@ -463,6 +475,159 @@ function wireUI() {
     if (!$('#ctx-menu').contains(e.target)) hideCtxMenu();
   });
   window.addEventListener('resize', hideCtxMenu);
+
+  // v8.20：三栏可拖动分隔条（pointer 事件统一抽象，宽度持久化到 localStorage）
+  initResizableGutters();
+  // v8.21：Peek 触发式交互（左栏窄图标条/右栏触发条，hover 展开，pin 固定）
+  initPeekMode();
+}
+
+/* ---------- v8.20 三栏可拖动分隔条 ----------
+ * 用 pointerdown/pointermove/pointerup（兼容鼠标/触摸/笔）。
+ * 宽度经 CSS 变量 --nav-w / --right-w 驱动，拖动时实时 setProperty。
+ * 命中区在伪元素上（CSS 已设 cursor:col-resize + z-index），这里只挂 pointerdown。
+ * 边界 clamp 防止拖过头：每栏保留最小可见宽度，主区至少占视口 30%。
+ * 宽度持久化到 localStorage，刷新后恢复。
+ */
+const GUTTER_KEY = 'deverai.gutters.v1';
+function loadGutterPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(GUTTER_KEY) || '{}');
+    if (typeof p.nav === 'number' && p.nav >= 200 && p.nav <= 360) {
+      document.documentElement.style.setProperty('--nav-w', p.nav + 'px');
+    }
+    if (typeof p.right === 'number' && p.right >= 240 && p.right <= 560) {
+      document.documentElement.style.setProperty('--right-w', p.right + 'px');
+    }
+  } catch (e) { /* 配置损坏用默认值 */ }
+}
+function saveGutterPref(key, val) {
+  try {
+    const p = JSON.parse(localStorage.getItem(GUTTER_KEY) || '{}');
+    p[key] = val; localStorage.setItem(GUTTER_KEY, JSON.stringify(p));
+  } catch (e) { /* 隐私模式/配额满静默 */ }
+}
+function initResizableGutters() {
+  loadGutterPrefs();
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  // 伪元素不直接接事件，用 hit 区（伪元素宽 --gutter-hit）落在父元素上，
+  // 检测 pointerdown 距右缘/左缘距离判定是否抓分隔条
+  const NAV_HIT = 8;   // 左栏右缘 8px 内视为抓分隔条
+  const RIGHT_HIT = 8; // 右栏左缘 8px 内视为抓分隔条
+  const NAV_MIN = 200, NAV_MAX = 360;
+  const RIGHT_MIN = 240, RIGHT_MAX = 560;
+  const MAIN_MIN_RATIO = 0.30; // 主区至少占视口 30%
+
+  const nav = $('#left-nav');
+  const right = $('#right-panel');
+  if (!nav || !right) return;
+
+  let dragging = null; // {type:'nav'|'right', startX, startW}
+
+  const onDown = (e) => {
+    if (e.button !== undefined && e.button !== 0) return; // 仅主键
+    const navRect = nav.getBoundingClientRect();
+    const rightRect = right.getBoundingClientRect();
+    // 左栏可见且点击在其右缘命中区
+    if (nav.offsetWidth > 0 && Math.abs(e.clientX - navRect.right) <= NAV_HIT) {
+      dragging = { type: 'nav', startX: e.clientX, startW: nav.offsetWidth };
+      e.preventDefault();
+      document.body.style.userSelect = 'none';
+      return;
+    }
+    // 右栏可见且点击在其左缘命中区
+    if (right.offsetWidth > 0 && Math.abs(e.clientX - rightRect.left) <= RIGHT_HIT) {
+      dragging = { type: 'right', startX: e.clientX, startW: right.offsetWidth };
+      e.preventDefault();
+      document.body.style.userSelect = 'none';
+    }
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    // 释放丢失兜底（pointerup 未触发时 buttons 为 0）
+    if (e.buttons === 0) { onUp(); return; }
+    const dx = e.clientX - dragging.startX;
+    if (dragging.type === 'nav') {
+      // 向右拖 → 左栏变宽；主区不能小于视口 30%
+      const mainMin = window.innerWidth * MAIN_MIN_RATIO;
+      const maxByMain = window.innerWidth - right.offsetWidth - mainMin - 2;
+      const w = clamp(dragging.startW + dx, NAV_MIN, Math.min(NAV_MAX, maxByMain));
+      document.documentElement.style.setProperty('--nav-w', w + 'px');
+    } else {
+      // 向左拖 → 右栏变宽；主区不能小于视口 30%
+      const mainMin = window.innerWidth * MAIN_MIN_RATIO;
+      const maxByMain = window.innerWidth - nav.offsetWidth - mainMin - 2;
+      const w = clamp(dragging.startW - dx, RIGHT_MIN, Math.min(RIGHT_MAX, maxByMain));
+      document.documentElement.style.setProperty('--right-w', w + 'px');
+    }
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    if (dragging.type === 'nav') saveGutterPref('nav', nav.offsetWidth);
+    else saveGutterPref('right', right.offsetWidth);
+    dragging = null;
+    document.body.style.userSelect = '';
+  };
+
+  document.addEventListener('pointerdown', onDown);
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onUp);
+  window.addEventListener('blur', onUp);
+
+  // v8.21：拖动分隔条 = 用户主动调整宽度 → 移除 peek 固定展开（保持当前宽度）
+  document.addEventListener('pointerdown', (e) => {
+    if (e.target === nav || nav?.contains(e.target)) return;
+    if (Math.abs(e.clientX - (nav?.getBoundingClientRect().right || 0)) <= 8) {
+      setPeek('nav', false);
+    }
+    if (Math.abs(e.clientX - (right?.getBoundingClientRect().left || 0)) <= 8) {
+      setPeek('right', false);
+    }
+  }, true);
+}
+
+/* ---------- v8.21 Peek 触发式交互 ----------
+ * ChatGPT 桌面端逻辑：未碰的区域最简展示，hover/聚焦才展开。
+ * 左栏 peek = 窄图标条（52px），hover 整栏展开挤占主区；
+ * 右栏 peek = 触发条宽（6px），hover 展开浮起。
+ * pin 按钮切换固定展开（移除 peek 类）；拖动分隔条也自动固定。
+ * 窄屏（<900px）不启用 peek，避免移动端误触。
+ */
+const PEEK_KEY = 'deverai.peek.v1';
+function loadPeekPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PEEK_KEY) || '{}');
+    return { nav: p.nav !== false, right: p.right !== false };
+  } catch (e) { return { nav: true, right: true }; }
+}
+function savePeekPref(key, val) {
+  try {
+    const p = JSON.parse(localStorage.getItem(PEEK_KEY) || '{}');
+    p[key] = val; localStorage.setItem(PEEK_KEY, JSON.stringify(p));
+  } catch (e) { /* 隐私模式静默 */ }
+}
+function setPeek(which, on) {
+  const el = which === 'nav' ? $('#left-nav') : $('#right-panel');
+  if (!el) return;
+  el.classList.toggle('peek', on);
+  const pin = which === 'nav' ? $('#btn-nav-pin') : $('#btn-right-pin');
+  if (pin) {
+    pin.classList.toggle('pinned', !on);
+    pin.setAttribute('aria-pressed', String(!on));
+  }
+  savePeekPref(which, on);
+}
+function initPeekMode() {
+  // 窄屏强制不 peek（media query 已处理布局，这里逻辑层也跳过）
+  if (window.innerWidth < 900) return;
+  const prefs = loadPeekPrefs();
+  setPeek('nav', prefs.nav);
+  setPeek('right', prefs.right);
+  const navPin = $('#btn-nav-pin');
+  if (navPin) navPin.onclick = () => setPeek('nav', !$('#left-nav').classList.contains('peek'));
+  const rightPin = $('#btn-right-pin');
+  if (rightPin) rightPin.onclick = () => setPeek('right', !$('#right-panel').classList.contains('peek'));
 }
 
 /* ---------- v8.13：多任务会话 / 知识文档 / 附件引用 / Agent 形态 ---------- */
@@ -476,14 +641,23 @@ function renderTaskLists() {
       const item = el('div', 'ln-item' + (t.id === App.taskId ? ' active' : ''));
       item.dataset.taskId = t.id;
       item.title = t.name + ' · ' + (t.updated_at || '');
+      item.setAttribute('role', 'button');
+      item.setAttribute('tabindex', '0');
+      item.setAttribute('aria-label', '切换到会话：' + t.name);
       item.appendChild(el('span', 'ln-dot'));
       item.appendChild(el('span', 'ln-label', esc(t.name)));
       item.onclick = () => switchTaskHandler(t.id);
+      // v8.20：键盘可达性 —— Enter / Space 触发与点击同等行为
+      item.onkeydown = (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); item.click(); }
+      };
       box.appendChild(item);
     });
   };
   mk('task-list');
   mk('chat-list');
+  // v8.16：同步刷新聊天区顶部会话标签条（sessions.js 暴露；开关关闭时自行隐藏）
+  if (window.Sessions) Sessions.render();
 }
 
 async function switchTaskHandler(taskId) {

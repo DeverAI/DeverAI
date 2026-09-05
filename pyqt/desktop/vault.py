@@ -88,8 +88,11 @@ class Vault:
                 thr = get_config().vault_threshold
             except Exception:
                 thr = 0.45
+        # v8.15 检修：search 在 worker 线程执行，而 add()/delete() 在事件循环线程
+        # 改列表（insert(0)/重建）——按索引回查 self._assets 会错位。对快照建索引。
+        assets = list(self._assets)
         docs = []
-        for asset in self._assets:
+        for asset in assets:
             tags = asset.get("tags") or []
             if not isinstance(tags, list):
                 tags = [tags]
@@ -100,7 +103,7 @@ class Vault:
             ))
         results = []
         for idx, score in match_rank(query, docs, min_score=thr):
-            results.append({"asset": self._assets[idx], "score": round(score, 4)})
+            results.append({"asset": assets[idx], "score": round(score, 4)})
         return results[:limit]
 
     # ---------- 生成物评估入库（3.1） ----------

@@ -332,21 +332,33 @@ async function walkFs(rel, opts = {}) {
 }
 
 /* ---------- 命令桥（浏览器无法直接执行命令，全部走桥） ---------- */
-async function bridgeRunCommand({ command, cwd, timeout, dangerOk, onLine, signal }) {
+async function bridgeRunCommand({ command, cwd, timeout, dangerOk, onLine, signal, env, updateInterval, killAfter, onUpdate }) {
   if (!FS.bridge.authorized) throw new Error('尚未授权命令桥工作区，请在设置中授权');
   let done = false;
   let rc = -1;
   let timedOut = false;
+  let leftRunning = false;
   let lastError = '';
+  let warnings = null;
+  const body = { command, cwd: cwd || '', timeout: timeout || 120, danger_ok: !!dangerOk };
+  // v8.18：持久环境 / 更新间隔 / 任务后杀进程（undefined=不传 → 后端按默认值并回 warning）
+  if (env !== undefined && env !== null && String(env) !== '') body.env = String(env);
+  if (updateInterval !== undefined && updateInterval !== null) body.update_interval = updateInterval;
+  if (killAfter !== undefined && killAfter !== null) body.kill_after = !!killAfter;
   await sseFetch(
     '/api/bridge/run_command',
-    { command, cwd: cwd || '', timeout: timeout || 120, danger_ok: !!dangerOk },
+    body,
     {
       onData(obj) {
         // 后端 error 事件（如启动失败）此前被静默吞掉——现在显式记录并随结果返回
         if (obj.error !== undefined && obj.error !== null) lastError = String(obj.error);
+        if (obj.warnings) warnings = obj.warnings;
         if (obj.line !== undefined && onLine) onLine(obj.line);
-        if (obj.done) { done = true; rc = obj.rc; timedOut = !!obj.timed_out; }
+        // v8.18：update_interval 心跳（静默期到点的输出快照）
+        if (obj.update && onUpdate) onUpdate(obj);
+        if (obj.done) {
+          done = true; rc = obj.rc; timedOut = !!obj.timed_out; leftRunning = !!obj.left_running;
+        }
       },
       onError(e) { throw e; },
       onAbort() {
@@ -357,7 +369,7 @@ async function bridgeRunCommand({ command, cwd, timeout, dangerOk, onLine, signa
     },
     signal
   );
-  return { ok: rc === 0 && !lastError, rc, timedOut, done, error: lastError };
+  return { ok: rc === 0 && !lastError, rc, timedOut, done, error: lastError, warnings, leftRunning };
 }
 
 /* ---------- v6.4 搜索桥（grep / glob，走 Python 后端） ---------- */

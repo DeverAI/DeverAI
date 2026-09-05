@@ -113,6 +113,10 @@ async def upsert_model(body: ModelBody, user: dict = Depends(current_user)):
                 if body.name:
                     info.name = body.name
                 if body.url:
+                    # v8.15 检修：换端点必须作废已存密钥——否则条目可被指向外部 URL 后
+                    # 沿用原密钥外带（proxy 覆盖链的另一半封堵）
+                    if info.api_key and body.url != info.url:
+                        info.api_key = ""
                     info.url = body.url
                 if body.intro:
                     info.intro = body.intro

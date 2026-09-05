@@ -9,7 +9,7 @@
 - [无 EMOJI] 用户明确要求 NO MORE EMOJIS：所有 UI（网页版与桌面版）禁止使用 emoji 表情符号，
   统一用 SVG 图标或纯文本/Unicode 几何符号（需确保 Windows 字体有字形）。此约束适用于
   活动栏、侧边栏、聊天面板、状态栏、工具卡片、专家卡片、肝完睡觉倒计时等全部界面。
-- [双入口并存] 网页版与桌面版作为独立入口并存：main.py 只跑桌面版（PyQt5），
+- [双入口并存] 网页版与桌面版作为独立入口并存：main.py 只跑桌面版（PyQt6），
   web_main.py 作为网页版启动入口（uvicorn + 自动开浏览器）。两者互不干扰，功能对等但代码独立。
 - [相对路径安全] AI 只能看到工作区文件的大代号（codename），写文件/命令只能用相对路径；
   绝对路径由系统层（bridge.py / desktop/tools.py）翻译，以减少隐私与安全风险。
@@ -86,3 +86,39 @@
   机器的开发环境），本仓库在该机器上曾存在 dev_log/ 与 README/requirements/AGENT.txt/sync_server.py，
   当前工作区副本中不存在；server.py 打包清单对缺失文件静默跳过（向前兼容，恢复文件后自动入包）。
   webui 与 lite 的 config.py 日志前缀均为 [lite] 属历史遗留，本轮已把 webui 侧改回 [web]。
+- [2026-08-27 轮次裁决] 用户指令「继续构建…先看目录再问问题后续直接一口气干完不返工」。问询裁决：
+  ①范围=收尾进行中的 v8.15 检修 + 开发 Future.md 的「多会话标签」；②本机不使用 git（用户明示
+  "我没有Git，不加"），本轮全程零 git 操作，改用 AGENT.txt backups/ 备份机制；③验证=全量+静态双深度。
+- [v8.16 会话语义] 多会话=仅隔离对话历史与跟随历史的视图；工作区/模型/配置全局共享。同一时刻全局只
+  一个 AI 回合，运行中禁切会话（桌面新增软阻止提示、网页版沿用 v8.13 守卫）。桌面镜像写活跃会话到旧
+  desktop_history.json（关闭开关后仍见最新对话，回退安全方向）；关闭最后一个标签=清空内容保留会话；
+  关闭非最后标签仅移除条目不删历史文件。网页版标签=打开态视图（localStorage deverai.v2.open_tasks），
+  删除标签仅移除打开态不删数据（当前版本主界面无任务删除入口，为后续增强方向——v8.16.1 复检
+  收敛口径）；Lite 持久化升级为 localStorage 分槽（浏览器重启可恢复），旧 sessionStorage 键
+  仅作首启迁移源。
+- [v8.16 测试隔离契约] 双服务端新增 DEVERAI_DATA_DIR 环境变量重定向数据目录（未设置时行为与历史版本
+  完全一致），配合既有 DEVERAI_RUNTIME_PORT 实现"零接触真实 data/"的端到端冒烟；tests/ 目录首次入库：
+  test_desktop_offscreen.py（复检修正恒真断言并增补开关链路后 35 项）+ test_smoke_servers.py（38 项），
+  退出码纪律为非零=存在失败。
+- [v8.17 安全中心裁决] 轻档（纯聚合现有安全能力为可视化 UI，不改底层删除语义、不加黑白名单/前缀放行/
+  备份配额）+ 三版本对齐（桌面设置对话框 Security Tab / webui 设置面板安全分区 / lite 只读审计面板）；
+  不做回收站删除保护语义（用户明确拒绝）。
+- [v8.18 终端环境池 + 悬浮小助手 Agent 循环 + 系统专家裁决] ① 命令行新增持久环境（cwd+env 轻量会话）+ 更新间隔心跳 + 任务后杀进程，全部带默认值 warning（未指定时返回 [WARN] 使用默认值：...，AI 可见）；四端同源（webui 后端 bridge.py / webui 前端 tools+fs+agent+voice-pet / 桌面后端 terms+tools / 桌面前端 tools）。② 悬浮小助手（小龙）升级为 Agent 循环入口——一次 LLM 调用自判 {mode: chat|agent_loop|system_expert}，agent_loop 暂停主循环（软暂停·工具边界安全停靠）后独立 runPetAgent 循环，system_expert 只读查阅 Design/Techniques/Fact 回答系统问题。③ 用户与 Agent 共享系统专家。④ 主循环软暂停原语（agentPauseMain/ResumeMain/WaitIfPaused）+ 工具循环两处停靠点。
+- [v8.15 验证基线] 89 个 .py 全量编译通过、15 个独立 js node --check 通过、双 lite.html 内联 JS 抽取
+  编译通过且两份逐字节一致；危险正则新增两条已四端同源（pyqt tools / app security ×2 / static js tools /
+  lite.html ×2——js/html 版以 [\s\S]* 与 .* 的等价写法保持行为一致）。
+- [v8.19 全量检修裁决] 用户指令「全量检修优化，不限范围，不限操作类型 + 阶段性备份 + 维护文档」。检修轮
+  无新功能：修复 test_desktop_offscreen.py 悬空 try:（桌面套件此前整体不可运行）、bridge.py 补
+  _save_term_envs（term/create 500）、冒烟测试按 expect_term 门控（lite 刻意不实现 v8.18 终端池）、
+  index.html 四 js 版本号 bump 8.19.0（修 v8.17/v8.18 漏 bump）、Design.md 六处 PyQt5→PyQt6 + §4.5
+  幽灵文件表改真实表。sync_server.py 确认为跨机器工作区差异（本副本刻意不含，见 2026-08-24 环境事实），
+  文档加注记而非补文件。
+- [2026-08-31 v8.24 WorkTree 命名裁决] 用户指出「WorkTree 不是 GitHub WorkTree 那个东西」——本项目术语
+  WorkTree = 独立安全备份审核（checkpoint/session_snap/dep_tree/audit 三层防线，Design 特点3），与
+  git worktree 无关。v8.21 引入的 git worktree 能力（bridge 四端点 + 面板 + 工具）保留但 UI 文案与
+  提示词更名「Git 分支实验」；内部标识符（/api/bridge/worktree/*、WorkTreePanel、worktree_list/switch
+  工具名）不动，避免无谓回归。
+- [2026-08-31 v8.24 sync_server 落地裁决] 用户追问「算力漂移是齐的吗？全面看 Design 别漏一堆东西」——
+  按 Design §2.3/§6.8 契约补建 sync_server.py 完整版（/push /pull /chat /drift/* /cmd/* + HTML
+  / 与 /chat/page + SYNC_TOKEN 鉴权），v8.19「加注记而非补文件」裁决就此作废；README.md 同轮补建
+  （Design §9 要求的首要入口文档，此前因跨机器差异缺失）。

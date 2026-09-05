@@ -42,6 +42,11 @@ DANGEROUS_PATTERNS = [
     r"\bpython(?:3)?\s+-c\b", r"\bpy\s+-c\b",
     r"\bpowershell\s+(?:-[a-z]+\s+)*-(?:command|enc)\b", r"\bcmd(?:\.exe)?\s+/[cq]\b",
     r"\bRemove-Item\b.*-Recurse\b", r"\bshutil\.rmtree\b", r"\bos\.remove\b",
+    # v8.15 检修：PowerShell 短参数/别名递归删除（Remove-Item -r、ri -Recurse 等）
+    # 此前只匹配全称 -Recurse，danger 模式下可免审批静默递归删除
+    r"\b(?:Remove-Item|ri|rm|del|erase|rmdir|rd)\b[^|\n;&]*\s-(?:recurse|r|rf|fr)\b",
+    # git clean 带 -f 才真正删文件（-fdx 清空全部未跟踪文件）
+    r"\bgit\s+clean\b[^|\n;&]*\s-[a-z]*f",
 ]
 
 
@@ -246,3 +251,32 @@ def reset_rate_state() -> None:
         _login_attempts.clear()
         _code_sent.clear()
         _code_fails.clear()
+
+
+def read_audit(tail: int = 200) -> list[dict]:
+    """读取审计日志最后 N 条（v8.17 安全中心聚合用）。"""
+    with _lock:
+        if not _AUDIT_PATH.exists():
+            return []
+        try:
+            lines = _AUDIT_PATH.read_text(encoding="utf-8").strip().split("\n")
+            entries: list[dict] = []
+            for line in lines[-tail:]:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+            return entries
+        except OSError:
+            return []
+
+
+def clear_audit() -> None:
+    """清空审计日志（v8.17 安全中心清空按钮）。"""
+    with _lock:
+        try:
+            _AUDIT_PATH.write_text("", encoding="utf-8")
+        except OSError:
+            pass

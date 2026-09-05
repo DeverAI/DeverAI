@@ -4,6 +4,9 @@
 
 ## 目录（章节导航）
 
+- [v8.15 检修收尾 + v8.16 多会话标签（2026-08-27）](#v815-检修收尾--v816-多会话标签2026-08-27)
+- [v8.18 终端环境池 + 悬浮小助手 Agent 循环 + 系统专家（2026-08-30）](#v818-终端环境池--悬浮小助手-agent-循环--系统专家2026-08-30)
+- [v8.17 安全中心轻档聚合（2026-08-30）](#v817-安全中心轻档聚合2026-08-30)
 - [全项目检查与深度加强（全量级别，2026-08-22）](#全项目检查与深度加强全量级别2026-08-22)
 - [DSH 插件版 — Cordis 动态插件套壳（2026-08-22）](#dsh-插件版--cordis-动态插件套壳2026-08-22)
 - [DashScope API 工具 + UI 元素检视（2026-08-21）](#dashscope-api-工具--ui-元素检视2026-08-21)
@@ -38,6 +41,86 @@
 - [v6.2 / v6.3 / v8 新增关键实现技巧](#v62-新增关键实现技巧双入口--svg--相对路径安全)
 
 ---
+
+## v8.15 检修收尾 + v8.16 多会话标签（2026-08-27）
+
+### 需求背景
+
+工作区继承了一轮**未完成的 v8.15 检修**（18 文件未提交修改 +401/-105，横跨三版本，文档/dev_log/备份均缺）。用户裁决：收尾该检修 + 开发「多会话标签」新功能；不使用 git（以 backups/ 目录按 AGENT.txt 备份机制替代）；验证做到全量+静态双深度。目标一轮完成不返工。
+
+### A. v8.15 收尾方案
+
+1. **改动面盘点**：18 文件分三类——①桌面 GUI 线程安全（QThread lambda 直连改绑定方法队列化、CompletionWorker 悬挂指针、HealthDashboard 并发扫描闸+代次校验、SleepDialog Esc 路径停定时器、事件泵补 note/expert_conflict/ui_auto_block 分支）；②主题/图标暗色适配（QSS 通用 background 改panel底色 + 命名容器透明豁免 + WA_StyledBackground 显式开启、SVG CSS 形式着色重着色兜底、trace_preview 主题色读取）；③三版本后端健壮性（_kill_tree 移入 _gen 闭包修复 NameError、保护名单 Windows 大小写归一、proxy/meta_bridge 密钥外带封堵、非流式响应 32MB 上限、危险正则 PowerShell 短参数补漏、grep 二进制探测部分读、run_command background 超时放宽、LLM 空 choices usage 兜底、storage fsync、checkpoint 孤儿 GC、vault 快照索引防并发错位）。
+2. **已知缺口补齐**（本轮发现）：新增危险正则只落在 pyqt/desktop/tools.py——按 FreqErr「四端同源」纪律同步 `lite/app/security.py`、`webui/app/security.py`、`webui/static/js/tools.js`、`lite/static/lite.html` 与 `webui/static/lite.html` 五个副本；GLM 空 choices usage 前端消费端核查（webui agent.js / lite.html 解析器同病则同步修）；pyqt/tools.py 保护名单是否需要与 bridge/lite 相同的小写化对齐。
+3. **Err.log 处理**：存量 lite codename 报错在 v8.14 已修（模块存在），验证 import 可用后清空内容。
+4. **静态验证**：Python 全量 compile（内存）、node --check 全量 JS、PyQt6 offscreen 导入全部 desktop 模块 + DeverAIApp 实例化（属性审计方式沿用 v8.14）。
+5. **全量冒烟**：lite/webui 以独立端口+隔离数据目录启动真实服务，跑注册/登录/Bearer me/服务信息/工作区授权/fs write-read 中文往返/fs tree/run_command SSE（danger 命令审批拒绝路径）/多会话数据自洽断言。
+
+### B. v8.16 多会话标签实现方案
+
+1. **桌面版**：新增 `desktop/sessions.py`——索引 `data/chat_sessions.json` {sessions:[{id,name,created_at,updated_at}], active_id}，历史文件 `data/chat_history/{id}.json`（save_json/load_json 复用原子写）；首启把旧 `data/desktop_history.json` 迁入 id=default 会话。ChatPanel 加横向 QTabBar（+新建），右键菜单重命名/关闭；DeverAIApp 持 session store，切换时：先保存当前 history → 载入目标会话 → ChatPanel 回放（add_user/new_ai+append_ai+finish_ai 按 role 重放）→ trace_panel.set_history 重建轨迹 → sync_q.mark_dirty("history") 跟随新会话。Agent 运行中（agent_thread busy）切换被软阻止并状态栏提示（Design 决策 115）。开关 ENABLE_MULTI_SESSION 进 config.py + settings_dialog 展示层（模块开关三层贯通纪律）。
+2. **网页版完整版**：复用 loadTasks/createTask/switchTask（IndexedDB 已分会话）；增量=聊天面板顶部标签条组件（sessions.js 渲染进 index.html 预置的 #session-tabs 容器 + main.js renderTaskLists 尾部接线同步刷新）+ 关闭标签仅移除打开态 + 开关 CFG_DEFAULT.ENABLE_MULTI_SESSION；运行中切换守卫已有（Agent.running toast），v8.16.1 起「+」新建入口补同款守卫。
+3. **Lite**：localStorage 分槽——索引 `lite.chat.sessions` {active,items:[{id,name}]}、历史 `lite.chat.hist.<id>`（id 白名单消毒）；旧键 lite.history 仅作首启迁移源（比 sessionStorage 耐浏览器重启，升级后旧数据自动迁入 default 会话）；聊天头下加标签条 DOM；ENABLE_MULTI_SESSION 入 State.cfg 默认 true。
+4. **验收链**（FreqErr「功能写好未接线」）：桌面以 offscreen 实例化真实走通 新建→落盘→切走→切回回放→busy 拒绝→关闭 与开关即时生效链路；webui/lite 标签调用链由人工冒烟覆盖，自动化层只断言服务端 API 面（test_smoke_servers.py）——验收声明以此为界，不夸大。
+
+### C. 实施结果与验证（同日完成）
+
+- 实现与上述方案的两处差异：①桌面 ChatPanel 回放未按 role 逐个调 add_user/new_ai，而是统一走 `replay_history()` 按协议消息重建（user/assistant 文本气泡 + tool/system 归轨迹面板），避免半途触发动画/回调；②网页版标签条直接由 `static/js/sessions.js` 渲染进 index.html 预置的 #session-tabs 容器（无独立 tabs.html）。
+- 关键接线点：桌面 `_send` 尾部 autotitle_if_blank + 刷新标签；多会话开启时每轮镜像活跃会话到旧 desktop_history.json（关闭开关回退仍可见最近对话）。webui renderTaskLists 尾部单点钩子 Sessions.render()（左栏任何刷新路径都带动标签条）。Lite enterApp 尾部 restoreHistory()+renderSessionTabs()。
+- 测试隔离契约：双服务端 config 支持 `DEVERAI_DATA_DIR` 环境变量重定向数据目录，配合 DEVERAI_RUNTIME_PORT 实现"零接触真实 data/"的端到端冒烟（tests/test_smoke_servers.py：独立临时目录 + 独立端口 8791/8792 真起 uvicorn）。
+- 测试资产首次入库 tests/：test_desktop_offscreen.py（v8.16.1 全局复检修正恒真断言与隔离声明后 **35 断言**：54 模块导入/主窗口/会话迁移/自动命名/重启恢复/新建/切换/回放/busy 守卫/关闭语义/开关即时生效链路）、test_smoke_servers.py（38 断言：注册、完整版 Bearer 与 Lite 无令牌两契约分别锁死、中文 fs 往返、tree 单层列举契约、SSE rc=0、危险命令 403/danger_ok="false" 严格拒/新增别名拦截/git clean -n 不误拦、只读保护）。根目录 _audit_tmp.py 为本轮探针转正的一键回归入口（gui/server/all 子命令）。
+- v8.16.1 全局复检处置（同日子代理审查发现，全部当轮修复）：①桌面设置接受后即时重评 ENABLE_MULTI_SESSION（新增 _apply_multi_session_switch，busy 中暂缓解释）；②webui saveSettings 保存后立即 Sessions.render()；③offscreen 测试 `(remove(),True)[1]` 恒真断言改为真实逐个移除链；④测试隔离声明收敛为诚实边界（重定向会话存储+停用 sync 外发，残余仅首启默认 config.json 幂等生成）；⑤Design 决策 114/117 措辞收敛到实际实现（能力梯度与打开集语义）；另 webui「+」新建补 busy 守卫、冒烟测试 Popen 移入 try 消除泄漏窗口。
+- 结果：Python 全量编译 89 文件通过、node --check 15 js 通过、双 lite.html 内联脚本一致且逐字节相等、桌面离屏回归 35/35（v8.16.1 复检修正并增补断言后）、服务冒烟 38/38。副本矩阵审计中抓到 v8.14 漏改漂移一处（users.py 邮箱注册后缀撞名循环复查只在 webui 侧），已同步后哈希复核六对副本：五对全等，config.py 仅存 [web]/[lite] 日志前缀刻意差异。隔离事后实证：全部测试执行后真实 pyqt/data 与根 data 均无任何残留写入。
+
+---
+
+## v8.17 安全中心轻档聚合（2026-08-30）
+
+### 需求背景
+
+用户参考竞品安全中心截图（沙箱三策略 + 自动备份配额 + 删除保护 + 审计中心 UI），要求聚合 DeverAI 已散落的安全能力为可视化安全中心。裁决：**轻档**（纯聚合现有能力，不改底层删除语义、不加黑白名单/前缀放行/备份配额）+ 三版本对齐 + 不做回收站。
+
+### A. 后端最小改动
+
+security.py（twin 同步）新增 `read_audit(tail=200)` 与 `clear_audit()`；webui/server.py 新增 `GET /api/security/audit` + `POST /api/security/audit/clear`；lite/lite_server.py 同步新增孪生端点；桌面版直接调 `audit.list_audits()` 读本地文件。无新模块开关——安全中心始终可见。
+
+### B. 三版本前端
+
+桌面版：设置对话框新增 Security Tab（命令安全/文件安全/网络安全/身份验证状态卡片 + allow_ai_delete/power_authorized/llm_allow_loopback 开关聚合 + 审计只读列表 + 导出/清空按钮）。网页版：设置面板新增安全中心分区（同结构 + 流水导出）。Lite：顶部安全按钮弹出只读审计日志 + 清空。
+
+### C. 验证
+
+静态：全量 py_compile + node --check；桌面 offscreen 新增 Security Tab 导入验证；服务冒烟新增审计读取/清空端点断言。
+
+## v8.18 终端环境池 + 悬浮小助手 Agent 循环 + 系统专家（2026-08-30）
+
+### 需求背景
+
+用户要求：① 命令行新增持久环境（同一环境多次执行命令继承 cwd/env）、更新间隔（定时心跳）、任务后杀进程，全部带默认值 warning（未指定时返回 `[WARN] 使用默认值：...`）；② 悬浮小助手（小龙）升级为 Agent 循环入口——一次 LLM 调用自判模式（chat=单轮跑腿 / agent_loop=暂停主循环后自主执行 / system_expert=系统专家），K210 刷写等场景可实时协作；③ 用户和 Agent 共享系统专家（拥有 Design/Techniques/Fact 系统知识上下文）。
+
+### A. 终端环境池后端
+
+`webui/app/bridge.py`：新增 `/api/bridge/term/create|list|delete` 端点 + `_term_resolve_and_touch` 辅助（按 id 或 name 解析环境并更新 last_used）。`run_command` 扩展三参数：`env`（持久环境 ref）、`update_interval`（0-120s，静默期到点心跳 SSE `update` 事件）、`kill_after`（默认 true，false 时超时/停止不杀树 → `left_running` 标记）。默认值 warning 作为首个 SSE 事件 + 输出首行下发（AI 可见）。持久化 `data/term_envs.json`（原子写 via `os.replace`）。
+
+`pyqt/desktop/terms.py`（新模块）：桌面端独立实现（与 bridge.py 结构对齐不共享代码）。`create_env/list_envs/get_env/delete_env/resolve_env_cwd_env/touch_env`；线程锁 + 原子写；cwd 走 `_resolve` 工作区安全校验。
+
+### B. 前端 / 工具注册
+
+`webui/static/js/fs.js`：`bridgeRunCommand` 透传 env/updateInterval/killAfter + 捕获 warnings/leftRunning/update 事件。
+
+`webui/static/js/tools.js`：run_command schema 扩展三参数；新增 `term_create/term_list/term_delete` 工具定义 + exec 分支（调 `/api/bridge/term/*`）+ switch 注册；warnings 注入输出首行。
+
+`pyqt/desktop/tools.py`：`tool_run_command` 扩展参数解析 + warnings；`_exec_command` 重写（env 合并 / `update_interval` 心跳 / `kill_after` / warnings）；新增 `tool_term_create/list/delete`；注册 TOOL_HANDLERS + build_tool_defs + TOOL_KEYWORDS。
+
+### C. 悬浮小助手 Agent 循环
+
+`webui/static/js/agent.js`：软暂停原语（`agentPauseMain/agentResumeMain/agentWaitIfPaused`）+ 工具循环顶部 / 每个工具执行前两个停靠点；`runPetAgent(userText, opts)` 独立循环（独立 AbortController / 独立 messages / 不污染主历史 / 无 SnapRound·saveHistory·sleep 副作用）。
+
+`webui/static/js/voice-pet.js`：`processInput` 无意图分支 → `decideAndProcess`（一次 LLM 调用输出 `{mode, reply}` JSON 头部）；`runPetLoop`（暂停主循环 → runPetAgent → 恢复）/ `runPetExpert`（系统专家 prompt）/ `renderPetEvent`（工具事件渲染到悬浮面板）。
+
+### D. 验证
+
+静态：py_compile 全量 + node --check 全量。`test_desktop_offscreen.py` 新增 `test_term_envs`（创建/列表/解析/重复名/非法变量/删除/持久化）。`test_smoke_servers.py` 新增 term_create/list/delete + run_command(env/update_interval/kill_after/warnings) 端到端。
 
 ## 全项目检查与深度加强（全量级别，2026-08-22）
 

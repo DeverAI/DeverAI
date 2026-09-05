@@ -89,6 +89,19 @@ COPILOT_PROMPT = """你是副驾驶（安全监察）。判断下列事件是否
 事件：
 {payload}"""
 
+# v8.18 副驾驶反思（监工）：主循环犯错后提炼教训入长期记忆库
+MISTAKE_REVIEW_PROMPT = """你是副驾驶（监工）。主循环 Agent 刚结束一轮工作，请判断它是否犯了值得长期记住的错误（会重复踩的坑）。
+只记录模式级错误，例如：超时太短就判定硬件损坏/喊换板子、没读日志就下结论、越权删改文件、
+重复用同一种已失败的方法、忽视用户明确约束、大改前不做快照。
+一次性笔误、环境抖动、纯主观口味差异不要记。
+
+本轮信息：
+{payload}
+
+输出严格 JSON（不要其他文字）：
+{{"mistake": false, "phenomenon": "错误现象（一句话）", "root_cause": "可能的远因", "solution": "下次的正确做法", "tags": ["检索标签"], "scope": "global"}}
+scope：global=跨项目通用坑（如硬件刷写超时）；local=仅该项目/该工作区相关。"""
+
 SENIOR_PROMPT_SUFFIX = """
 
 【高级专家约束】你的输出计费系数高（输出优先最小化）：
@@ -144,6 +157,38 @@ async def copilot_check(cfg: Config, payload: dict) -> dict:
         }
     except Exception as e:
         return {"kill": False, "uncertain": True, "note": f"副驾驶调用失败，升级人工：{e}"}
+
+
+async def copilot_review_mistake(cfg: Config, round_summary: dict) -> Optional[dict]:
+    """v8.18 副驾驶反思：主循环犯错时返回教训 dict（memory.record 的参数），无错/失败返回 None。
+
+    触发时机由调用方控制（用户纠正 / 工具连续失败）；本函数绝不抛异常、绝不阻塞主流程。"""
+    try:
+        # 副驾驶模型缺省回落助手模型（反思属分析类，用便宜模型）
+        mid = getattr(cfg, "copilot_model", "") or getattr(cfg, "helper_model", "")
+        llm_cfg = get_llm_cfg(cfg, resolve_model_id(cfg, mid))
+        msg = await chat_complete(llm_cfg, [
+            {"role": "system", "content": MISTAKE_REVIEW_PROMPT.format(
+                payload=json.dumps(round_summary, ensure_ascii=False)[:1500])},
+            {"role": "user", "content": "请判断并输出 JSON。"},
+        ], max_tokens=300, timeout=80.0)
+        data = extract_json(msg.get("content") or "")
+        if not data.get("mistake"):
+            return None
+        phen = str(data.get("phenomenon") or "").strip()
+        if not phen:
+            return None
+        return {
+            "kind": "fault",
+            "scope": data.get("scope") if data.get("scope") in ("global", "local") else "local",
+            "phenomenon": phen[:300],
+            "root_cause": str(data.get("root_cause") or "")[:300],
+            "solution": str(data.get("solution") or "")[:300],
+            "tags": [str(t)[:20] for t in (data.get("tags") or [])
+                     if isinstance(data.get("tags"), list) and str(t).strip()][:5],
+        }
+    except Exception:
+        return None
 
 
 def pick_models(cfg: Config, weights: dict, mode: str = "b.1", top: int = 3) -> list:

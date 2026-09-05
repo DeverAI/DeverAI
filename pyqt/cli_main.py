@@ -179,7 +179,7 @@ class CliSession:
                 mark = f"{C.GREEN}✓" if ok else f"{C.RED}✗"
                 print(f"\n{mark} {name}{C.RST} {out}")
             elif typ == "copilot_block":
-                print(f"\n{C.RED}⛔ 副驾驶拦截: {ev.get('note', '')}{C.RST}")
+                print(f"\n{C.RED}[BLOCKED] 副驾驶拦截: {ev.get('note', '')}{C.RST}")
             elif typ == "guard":
                 ok = bool(ev.get("ok"))
                 print(f"\n{C.YELLOW}守卫: {'通过' if ok else '注意'}: {ev.get('note', '')}{C.RST}")
@@ -249,7 +249,7 @@ class CliSession:
             result = AgentResult(cancelled=True)
         except Exception as e:
             # v8.7 审查修复：CLI 路径异常同样落根目录 Err.log（自动存错机制），不回显 traceback
-            from desktop.errors import log_error  # noqa: F401
+            from desktop.errors import log_error
             log_error("CLI Agent 异常", e)
             if not self._err_emitted:
                 print(f"\n{C.RED}[Agent 异常] {e}{C.RST}")
@@ -286,8 +286,12 @@ async def _session_loop(cfg: Config, no_color: bool) -> None:
             elif text in ("/help", "/?"):
                 print("命令: /mode <builder|chat|experts> 切换形态 | /clear 清空会话 | "
                       "/history 条数 | /quit 退出")
-            elif text.startswith("/mode "):
-                m = text.split(None, 1)[1].strip()
+            elif text.startswith("/mode"):
+                parts = text.split(None, 1)
+                if len(parts) < 2:
+                    print("用法: /mode <builder|chat|experts>")
+                    continue
+                m = parts[1].strip()
                 if m in ("builder", "chat", "experts"):
                     cfg.agent_mode = m
                     print(f"已切换形态: {C.BOLD}{m}{C.RST}")

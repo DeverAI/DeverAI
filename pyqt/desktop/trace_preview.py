@@ -260,6 +260,16 @@ class TracePreviewDialog(QDialog):
         if zoom_lbl:
             zoom_lbl.setText(f"{zoom}%")
         font_size = max(10, int(13 * zoom / 100))
+        # v8.15 检修：文字/边框/链接色此前硬编码浅色主题值，暗色主题下近黑字配近黑底不可读
+        try:
+            from .config import get_config
+            from . import themes as _themes
+            pal = _themes.get_palette(getattr(get_config(), "theme", "obsidian"))
+            txt_c = pal.get("text", "#e2e8f0")
+            border_c = pal.get("border", "#252530")
+            link_c = pal.get("accent", "#3b82f6")
+        except Exception:
+            txt_c, border_c, link_c = "#1f2937", "#e5e7eb", "#2563eb"
 
         blocks = []
         for key, label, text in self._elements():
@@ -269,16 +279,16 @@ class TracePreviewDialog(QDialog):
               <div style='margin-bottom:12px;'>
                 <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;'>
                   <span style='font-weight:600; color:{meta['color']}; font-size:{int(font_size*0.95)}px;'>{_esc(label)}</span>
-                  <a href='quote:{key}' style='color:#2563eb; text-decoration:none; font-size:11px; font-family: "Microsoft YaHei","Segoe UI",sans-serif;'>引用</a>
+                  <a href='quote:{key}' style='color:{link_c}; text-decoration:none; font-size:11px; font-family: "Microsoft YaHei","Segoe UI",sans-serif;'>引用</a>
                 </div>
-                <div style='background:{meta['bg']}; padding:8px 12px; border-radius:8px; border:1px solid #e5e7eb; border-left:3px solid {meta['color']}; white-space:pre-wrap; word-break:break-word;'>
+                <div style='background:{meta['bg']}; padding:8px 12px; border-radius:8px; border:1px solid {border_c}; border-left:3px solid {meta['color']}; white-space:pre-wrap; word-break:break-word;'>
                   {body}
                 </div>
               </div>
             """)
 
         html_doc = f"""
-        <html><body style='font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: {font_size}px; color: #1f2937;'>
+        <html><body style='font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: {font_size}px; color: {txt_c};'>
           <div style='padding: 6px 4px;'>
             {''.join(blocks)}
           </div>

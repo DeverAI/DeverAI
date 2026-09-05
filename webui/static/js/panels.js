@@ -169,6 +169,7 @@ const SWITCHES = [
   ['ENABLE_SESSION_SNAP', '任务级会话快照', '一轮对话打包+轮内回退+只读报警'],
   ['ENABLE_DEP_TREE', '依赖树校验', '扫描 import 依赖+大小下限，缺失报警注入上下文'],
   ['ENABLE_CTX_EXPERT', '上下文守门', '分块守门裁剪历史+永久禁用问题块'],
+  ['ENABLE_MULTI_SESSION', '多会话标签', '聊天区顶部标签条：新建/切换/关闭多个对话'],
   ['ENABLE_WEB_SEARCH', '互联网搜索', 'DDG 零 key 联网查资料/Benchmark'],
   ['ENABLE_BROWSER', '浏览器控制', '无头抓取网页/截图/打开链接'],
   ['ENABLE_NOTEPAD', '暂存便签', 'Agent 跨轮暂存中间结果'],
@@ -181,6 +182,9 @@ const SWITCHES = [
   ['ENABLE_BROWSER_CTL', '直接操控浏览器', 'CDP 启动浏览器并点击/输入/按键/跳转'],
   ['ENABLE_BROWSER_DEVTOOLS', 'F12 开发者工具', 'Networks/Storage/Console/Sources 面板（查找 API 端点）'],
   ['ENABLE_EXE_JOURNAL', '外部软件探索记录', '记录 exe 自动化每次操作到 journal'],
+  ['ENABLE_EXE_AUTOMATE', '外部软件自动化', '启动/操控本地 exe 软件（点击/输入/按键/截图，危险操作强制审批）'],
+  ['ENABLE_MEMORY', '长期记忆', '跨会话记忆/经验系统：自动召回注入 + memory_* 工具（浏览器本地 IndexedDB）'],
+  ['ENABLE_OUTBOUND_GATE', '出关审核（repeat）', 'AI 向外传递最终内容前必须复述你的原始要求并经你审核批准'],
 ];
 
 const SETTINGS_NAV = [
@@ -188,6 +192,7 @@ const SETTINGS_NAV = [
   { id: 'models', label: 'Models', icon: 'models' },
   { id: 'agents', label: 'Agents', icon: 'agents' },
   { id: 'skills', label: 'Skills & Commands', icon: 'skills' },
+  { id: 'security', label: 'Security', icon: 'shield' },   // v8.17 安全中心
   { id: 'advanced', label: 'Advanced', icon: 'advanced' },
 ];
 
@@ -249,6 +254,12 @@ function switchSettingsPage(page) {
   renderSettingsNav(page);
   $$('.settings-page').forEach((p) => p.classList.toggle('active', p.dataset.page === page));
   if (page === 'models') loadModelRegistry();
+  if (page === 'security') {
+    loadSecurityAudit();
+    renderExtApiEditor();
+    renderOutboundDrafts();
+    loadSmtpStatus();
+  }
 }
 
 function renderSettingsPages() {
@@ -258,6 +269,7 @@ function renderSettingsPages() {
     ${renderModelsPage()}
     ${renderAgentsPage()}
     ${renderSkillsPage()}
+    ${renderSecurityPage()}
     ${renderAdvancedPage()}
   `;
   hydrateIcons(box);
@@ -455,6 +467,250 @@ function renderSkillsPage() {
     <div class="section-title">Commands</div>
     <div id="commands-list"></div>
   </div>`;
+}
+
+// v8.17 安全中心
+function renderSecurityPage() {
+  return `
+  <div class="settings-page" data-page="security">
+    <div class="section-title">安全中心</div>
+    <div style="font-size:13px;color:var(--fg2);margin-bottom:12px;">聚合工作空间安全能力状态与审计日志</div>
+
+    <div class="card" style="margin-bottom:8px;">
+      <div style="font-weight:600;">命令安全</div>
+      <div style="font-size:13px;color:var(--fg2);">危险命令审批门始终开启（danger_ok 严格校验）</div>
+    </div>
+    <div class="card" style="margin-bottom:8px;">
+      <div style="font-weight:600;">文件安全</div>
+      <div style="font-size:13px;color:var(--fg2);">只读保护名单内置（Windows 大小写归一）</div>
+    </div>
+    <div class="card" style="margin-bottom:8px;">
+      <div style="font-weight:600;">网络安全</div>
+      <div style="font-size:13px;color:var(--fg2);">SSRF 自环防护强制开启（数值 IP 归一 + 自环端口检测）</div>
+    </div>
+    <div class="card" style="margin-bottom:8px;">
+      <div style="font-weight:600;">身份验证</div>
+      <div style="font-size:13px;color:var(--fg2);">HMAC Cookie + Bearer Token 双通道鉴权</div>
+    </div>
+
+    <div class="section-title" style="margin-top:16px;">外部 API 清单（授权给 AI）</div>
+    <div style="font-size:13px;color:var(--fg2);margin-bottom:8px;">清单内的 API，AI 可通过 api_request 工具调用（首次调用需你在聊天卡片中授权）。密钥仅存浏览器本地。</div>
+    <div id="extapi-list"></div>
+    <div class="card" style="margin-top:8px;padding:10px;">
+      <div style="display:grid;grid-template-columns:1fr 2fr 1fr;gap:6px;margin-bottom:6px;">
+        <input id="extapi-name" placeholder="名称（如 github）" style="width:100%;" />
+        <input id="extapi-url" placeholder="https://api.example.com" style="width:100%;" />
+        <input id="extapi-key" placeholder="API Key（可选）" style="width:100%;" />
+      </div>
+      <div style="display:flex;gap:6px;">
+        <input id="extapi-desc" placeholder="用途说明（可选，展示给 AI 与授权卡片）" style="flex:1;" />
+        <button class="btn primary" onclick="addExtApi()">添加</button>
+      </div>
+    </div>
+
+    <div class="section-title" style="margin-top:16px;">Heartbeat 泄露检查</div>
+    <div style="font-size:13px;color:var(--fg2);margin-bottom:8px;">一键检查：扫描本地工作区疑似泄露凭证（API Key/私钥/密码）+ 对上方 API 厂商做存活心跳。可选 SMTP 邮件报告（需服务端配置 SMTP 环境变量）。</div>
+    <div class="card" style="padding:10px;">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <button class="btn primary" id="btn-leak-scan" onclick="runLeakScan()">一键检查</button>
+        <input id="leak-notify-email" placeholder="报告收件邮箱（可选，SMTP 未配置时忽略）" style="flex:1;min-width:200px;" />
+        <span id="smtp-status" style="font-size:12px;color:var(--fg2);"></span>
+      </div>
+      <div id="leak-result" style="margin-top:10px;font-size:13px;"></div>
+    </div>
+
+    <div class="section-title" style="margin-top:16px;">出关草稿（邮件）</div>
+    <div style="font-size:13px;color:var(--fg2);margin-bottom:8px;">AI 经 outbound_deliver 审核通过、目标为 email 的内容会暂存为草稿。发送需你在此手动触发（AI 不能直发邮件）。</div>
+    <div id="outbound-drafts"></div>
+
+    <div class="section-title" style="margin-top:16px;">审计日志</div>
+    <textarea id="audit-log-box" readonly style="width:100%;height:180px;font-size:12px;font-family:monospace;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;resize:vertical;" placeholder="暂无审计记录"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button class="btn" onclick="loadSecurityAudit()">刷新</button>
+      <button class="btn" onclick="exportSecurityAudit()">导出</button>
+      <button class="btn danger" onclick="clearSecurityAudit()">清空审计日志</button>
+    </div>
+
+    <div class="section-title" style="margin-top:16px;">错误日志</div>
+    <textarea id="err-log-box-sec" readonly style="width:100%;height:120px;font-size:12px;font-family:monospace;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;resize:vertical;"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button class="btn" onclick="loadErrLog()">刷新</button>
+      <button class="btn danger" onclick="clearErrLog()">清空错误日志</button>
+    </div>
+  </div>`;
+}
+
+function loadSecurityAudit() {
+  api('/api/security/audit').then(r => {
+    const box = $('#audit-log-box');
+    if (!box) return;
+    const entries = (r.entries || []).reverse();
+    if (!entries.length) { box.value = '暂无审计记录'; return; }
+    box.value = entries.map(e =>
+      `[${e.ts || ''}] ${e.action || ''} ${e.user || ''} ${e.ip || ''} ${e.detail || ''}`
+    ).join('\n');
+  }).catch(() => {});
+}
+
+function exportSecurityAudit() {
+  const box = $('#audit-log-box');
+  if (!box || !box.value.trim()) { toast('无审计记录可导出', 'err'); return; }
+  const blob = new Blob([box.value], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'audit_' + new Date().toISOString().slice(0, 10) + '.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function clearSecurityAudit() {
+  if (!confirm('确定清空全部审计记录？此操作不可逆。')) return;
+  api('/api/security/audit/clear', { method: 'POST' }).then(() => {
+    toast('审计日志已清空', 'ok');
+    loadSecurityAudit();
+  }).catch(() => toast('清空失败', 'err'));
+}
+
+function clearErrLog() {
+  if (!confirm('确定清空 Err.log？')) return;
+  api('/api/errs/clear', { method: 'POST' }).then(() => {
+    toast('错误日志已清空', 'ok');
+    loadErrLog();
+  }).catch(() => toast('清空失败', 'err'));
+}
+
+// v8.22 外部 API 清单（安全中心编辑器；数据在 ExtAPIs/localStorage）
+function renderExtApiEditor() {
+  const box = $('#extapi-list');
+  if (!box) return;
+  const list = (typeof ExtAPIs !== 'undefined') ? ExtAPIs.list() : [];
+  if (!list.length) {
+    box.innerHTML = '<div style="font-size:13px;color:var(--fg2);padding:6px 0;">（清单为空——添加后 AI 才能调用外部 API）</div>';
+    return;
+  }
+  box.innerHTML = '';
+  list.forEach((it) => {
+    const row = el('div', 'card');
+    row.style.cssText = 'margin-bottom:6px;padding:8px 10px;display:flex;align-items:center;gap:8px;';
+    const info = el('div', '');
+    info.style.cssText = 'flex:1;min-width:0;';
+    info.innerHTML = `<div style="font-weight:600;">${esc(it.name)}</div>` +
+      `<div style="font-size:12px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(it.base_url)}${it.api_key ? ' [已存密钥]' : ''}${it.desc ? ' — ' + esc(it.desc) : ''}</div>`;
+    const del = el('button', 'btn danger', '删除');
+    del.onclick = () => {
+      if (!confirm('删除 API「' + it.name + '」？')) return;
+      ExtAPIs.remove(it.name);
+      renderExtApiEditor();
+      toast('已删除 ' + it.name, 'ok');
+    };
+    row.appendChild(info);
+    row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+function addExtApi() {
+  if (typeof ExtAPIs === 'undefined') { toast('ExtAPIs 模块未加载', 'err'); return; }
+  const name = ($('#extapi-name') || {}).value || '';
+  const url = (($('#extapi-url') || {}).value || '').trim();
+  const key = (($('#extapi-key') || {}).value || '').trim();
+  const desc = (($('#extapi-desc') || {}).value || '').trim();
+  const ok = ExtAPIs.upsert({ name: name.trim(), base_url: url, api_key: key, desc });
+  if (!ok) { toast('名称需为 1-64 位字母数字._- 且 URL 必填', 'err'); return; }
+  ['#extapi-name', '#extapi-url', '#extapi-key', '#extapi-desc'].forEach((s) => { const i = $(s); if (i) i.value = ''; });
+  renderExtApiEditor();
+  toast('API 已加入清单', 'ok');
+}
+
+function loadSmtpStatus() {
+  api('/api/security/smtp_status').then((r) => {
+    const s = $('#smtp-status');
+    if (s) s.textContent = r.configured ? 'SMTP 已配置' : 'SMTP 未配置（报告邮件不可用）';
+  }).catch(() => {});
+}
+
+async function runLeakScan() {
+  const btn = $('#btn-leak-scan');
+  const out = $('#leak-result');
+  if (!out) return;
+  if (btn) { btn.disabled = true; btn.textContent = '检查中…'; }
+  out.textContent = '正在扫描本地工作区与厂商心跳…';
+  const email = (($('#leak-notify-email') || {}).value || '').trim();
+  const vendors = (typeof ExtAPIs !== 'undefined')
+    ? ExtAPIs.list().map((x) => ({ name: x.name, base_url: x.base_url })) : [];
+  try {
+    const r = await api('/api/security/leak_scan', { method: 'POST', body: { vendors, notify_email: email } });
+    const parts = [];
+    if (r.ws_note) parts.push('[!] ' + r.ws_note);
+    const f = r.findings || [];
+    parts.push(f.length ? `[X] 本地疑似泄露 ${f.length} 处：` : '[OK] 本地未发现疑似泄露凭证');
+    f.slice(0, 30).forEach((x) => parts.push(`    ${x.file}:${x.line} (${x.kind}) ${x.preview}`));
+    if (f.length > 30) parts.push(`    …另有 ${f.length - 30} 处`);
+    const vs = r.vendors || [];
+    if (vs.length) {
+      vs.forEach((v) => {
+        parts.push(v.error
+          ? `[X] 厂商 ${v.name}: ${v.error}`
+          : `[OK] 厂商 ${v.name}: HTTP ${v.status}（${v.latency_ms}ms）`);
+      });
+    } else {
+      parts.push('（外部 API 清单为空，未执行厂商心跳）');
+    }
+    if (r.smtp_sent) parts.push('[OK] 报告邮件已发送至 ' + email);
+    else if (r.smtp_note) parts.push('[!] 邮件发送失败: ' + r.smtp_note);
+    out.style.whiteSpace = 'pre-wrap';
+    out.textContent = parts.join('\n');
+    toast('泄露检查完成', (r.findings || []).length ? 'err' : 'ok');
+  } catch (e) {
+    out.textContent = '检查失败: ' + e.message;
+    toast('泄露检查失败', 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '一键检查'; }
+  }
+}
+
+function renderOutboundDrafts() {
+  const box = $('#outbound-drafts');
+  if (!box) return;
+  let drafts = [];
+  try { drafts = JSON.parse(localStorage.getItem('deverai.outbound.drafts') || '[]'); } catch (e) {}
+  if (!drafts.length) {
+    box.innerHTML = '<div style="font-size:13px;color:var(--fg2);padding:6px 0;">（暂无草稿）</div>';
+    return;
+  }
+  box.innerHTML = '';
+  drafts.slice().reverse().forEach((d) => {
+    const row = el('div', 'card');
+    row.style.cssText = 'margin-bottom:6px;padding:8px 10px;';
+    const head = el('div', '');
+    head.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    head.innerHTML = `<div style="font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(d.title || '(无主题)')}</div>` +
+      `<div style="font-size:12px;color:var(--fg2);">${new Date(d.created_at || Date.now()).toLocaleString()}</div>`;
+    const body = el('div', '');
+    body.style.cssText = 'font-size:12px;color:var(--fg2);white-space:pre-wrap;max-height:120px;overflow-y:auto;margin:6px 0;border:1px solid var(--border);border-radius:6px;padding:6px;';
+    body.textContent = String(d.content || '').slice(0, 2000);
+    const acts = el('div', '');
+    acts.style.cssText = 'display:flex;gap:6px;';
+    const mail = el('button', 'btn primary', '用邮件客户端发送');
+    mail.onclick = () => {
+      const href = 'mailto:?subject=' + encodeURIComponent(d.title || '') + '&body=' + encodeURIComponent(String(d.content || '').slice(0, 1500));
+      location.href = href;
+    };
+    const cp = el('button', 'btn', '复制全文');
+    cp.onclick = () => {
+      navigator.clipboard.writeText(String(d.content || '')).then(() => toast('已复制', 'ok'));
+    };
+    const del = el('button', 'btn danger', '删除');
+    del.onclick = () => {
+      const rest = drafts.filter((x) => x.id !== d.id);
+      localStorage.setItem('deverai.outbound.drafts', JSON.stringify(rest));
+      renderOutboundDrafts();
+      toast('草稿已删除', 'ok');
+    };
+    acts.appendChild(mail); acts.appendChild(cp); acts.appendChild(del);
+    row.appendChild(head); row.appendChild(body); row.appendChild(acts);
+    box.appendChild(row);
+  });
 }
 
 function renderAdvancedPage() {
@@ -1348,6 +1604,8 @@ function saveSettings() {
   }
   closeModal();
   updateStatusbar();
+  // v8.16.1：多会话开关即时生效（此前标签条显隐要等下一次左栏刷新）
+  if (window.Sessions) Sessions.render();
   if (typeof applyTheme === 'function') applyTheme(App.config.theme);
   // 语音助手开关实时生效（浮层需重新初始化）
   if (window.VoicePet && App.config.ENABLE_VOICE_ASSISTANT) window.VoicePet.init();
@@ -1359,8 +1617,12 @@ function saveSettings() {
 async function loadErrLog() {
   try {
     const r = await api('/api/errs');
+    const content = r.content || '';
+    // v8.17：同时填充 Advanced 页和 Security 页的错误日志框
     const box = $('#err-log-box');
-    if (box) box.value = r.content || '';
+    if (box) box.value = content;
+    const box2 = $('#err-log-box-sec');
+    if (box2) box2.value = content || '暂无错误记录';
   } catch (e) {}
 }
 
@@ -1729,3 +1991,114 @@ async function loadAccountProjects() {
     box.textContent = '加载失败: ' + e.message;
   }
 }
+
+/* ============ v8.21 Git 分支实验面板（git worktree 列表/切换/新建/移除） ============
+   v8.24 更名：与 Design「WorkTree 独立安全备份审核」（checkpoint/session_snap/dep_tree/audit）区分。 */
+const WorkTreePanel = {
+  async refresh() {
+    const box = $('#wt-list');
+    if (!box) return;
+    box.innerHTML = '<div class="wt-empty">加载中…</div>';
+    try {
+      const r = await api('/api/bridge/worktree/list');
+      this._render(r.items || []);
+    } catch (e) {
+      const msg = e.message || '加载失败';
+      box.innerHTML = '<div class="wt-empty">' + esc(msg) + '<br><span style="font-size:11px">需工作区为 git 仓库且已授权</span></div>';
+    }
+  },
+  _render(items) {
+    const box = $('#wt-list');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!items.length) {
+      box.innerHTML = '<div class="wt-empty">暂无工作树<br><span style="font-size:11px">点击右上 + 新建工作树</span></div>';
+      return;
+    }
+    items.forEach((wt) => {
+      const item = el('div', 'wt-item' + (wt.current ? ' current' : ''));
+      item.setAttribute('role', 'listitem');
+      const iconWrap = el('span', 'wt-icon');
+      iconWrap.innerHTML = icon(wt.current ? 'pin' : 'worktree', 14);
+      item.appendChild(iconWrap);
+      const main = el('div', 'wt-main');
+      const name = el('div', 'wt-name', esc(wt.name));
+      main.appendChild(name);
+      const meta = el('div', 'wt-meta');
+      if (wt.branch) {
+        const br = el('span', 'wt-branch', esc('@ ' + wt.branch));
+        meta.appendChild(br);
+      }
+      const dirty = el('span', wt.dirty ? 'wt-dirty' : 'wt-clean', wt.dirty ? '[未提交]' : '[干净]');
+      meta.appendChild(dirty);
+      if (wt.head) {
+        const h = el('span', 'wt-head', esc(wt.head));
+        meta.appendChild(h);
+      }
+      main.appendChild(meta);
+      item.appendChild(main);
+      const actions = el('div', 'wt-actions');
+      if (!wt.current) {
+        const sw = el('button', 'icon-btn');
+        sw.title = '切换到此工作树';
+        sw.setAttribute('aria-label', '切换到 ' + wt.name);
+        sw.innerHTML = icon('refresh', 12);
+        sw.onclick = () => this._switch(wt.name);
+        actions.appendChild(sw);
+      }
+      if (!wt.current) {
+        const rm = el('button', 'icon-btn danger');
+        rm.title = '移除工作树';
+        rm.setAttribute('aria-label', '移除 ' + wt.name);
+        rm.innerHTML = icon('close', 12);
+        rm.onclick = () => this._remove(wt.name);
+        actions.appendChild(rm);
+      }
+      item.appendChild(actions);
+      box.appendChild(item);
+    });
+  },
+  async _switch(name) {
+    if (!confirm('切换工作区到工作树 "' + name + '"？（Git 分支实验）\n当前会话的工作区指向将改变。')) return;
+    try {
+      const r = await api('/api/bridge/worktree/switch', { method: 'POST', body: { name, danger_ok: true } });
+      toast('已切换到 ' + (r.workspace || name), 'ok');
+      await FS.refreshRoot();
+      this.refresh();
+      if (typeof updateStatusbar === 'function') updateStatusbar();
+      if (typeof Tree !== 'undefined') Tree.refresh().catch(() => {});
+    } catch (e) {
+      toast('切换失败: ' + e.message, 'err');
+    }
+  },
+  async _remove(name) {
+    if (!confirm('移除工作树 "' + name + '"？（Git 分支实验）\n该工作树目录将被 git worktree remove 删除。')) return;
+    try {
+      await api('/api/bridge/worktree/remove', { method: 'POST', body: { name, danger_ok: true } });
+      toast('已移除 ' + name, 'ok');
+      this.refresh();
+    } catch (e) {
+      toast('移除失败: ' + e.message, 'err');
+    }
+  },
+  async _create() {
+    const name = prompt('新工作树名称（字母数字._-，将创建于 .worktrees/<name>）：');
+    if (!name) return;
+    const branch = prompt('新分支名（留空则 detached HEAD）：') || '';
+    try {
+      const r = await api('/api/bridge/worktree/create', {
+        method: 'POST', body: { name: name.trim(), branch: branch.trim(), danger_ok: true }
+      });
+      toast('已创建工作树 ' + r.name + (r.branch ? ' @ ' + r.branch : ''), 'ok');
+      this.refresh();
+    } catch (e) {
+      toast('创建失败: ' + e.message, 'err');
+    }
+  },
+  wire() {
+    const refresh = $('#btn-wt-refresh');
+    if (refresh) refresh.onclick = () => this.refresh();
+    const create = $('#btn-wt-new');
+    if (create) create.onclick = () => this._create();
+  },
+};

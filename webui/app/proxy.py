@@ -242,9 +242,12 @@ async def llm_chat(request: Request, user: dict = Depends(current_user)):
         from desktop import models as models_mod
         m = models_mod.get_model(model)
         if m is not None:
+            user_url = str(body.get("base_url") or "")
             if m.url:
                 body["base_url"] = m.url
-            if m.api_key:
+            # v8.15 检修：注册表 key 只在端点未被用户改向时才下发——
+            # 否则登录用户可仅改 url 把服务端真密钥外带到自己控制的服务器
+            if m.api_key and (not user_url or user_url == m.url):
                 body["api_key"] = m.api_key
     except Exception:
         pass
@@ -339,10 +342,84 @@ async def llm_chat(request: Request, user: dict = Depends(current_user)):
                             if line:
                                 yield line + "\n\n"
                     else:
-                        data = (await resp.aread()).decode("utf-8", errors="replace")
+                        # v8.15 检修：非流式响应设 32MB 上限（防误配端点超大 body 撑爆内存）
+                        chunks = []
+                        got = 0
+                        async for chunk in resp.aiter_bytes():
+                            chunks.append(chunk)
+                            got += len(chunk)
+                            if got >= 32 * 1024 * 1024:
+                                break
+                        data = b"".join(chunks).decode("utf-8", errors="replace")
                         yield f'data: {data}\n\n'
         except Exception as e:
             # v6.2 P2-5：异常信息脱敏，不回传原始连接细节
             yield f'event: error\ndata: {json.dumps({"message": _sanitize_error(str(e))}, ensure_ascii=False)}\n\n'
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+# v8.22：外部 API 通用代理（Agent api_request 工具的服务端转发）
+# 复用 llm/chat 的全部 SSRF 防护（_validate_base：数值 IP 归一/内网封锁/自环检测）。
+# 密钥同样只随请求透传，服务端不落盘。
+_EXT_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+_EXT_MAX_RESP = 512 * 1024  # 响应体回传上限 512KB
+
+
+@router.post("/ext_proxy")
+async def ext_proxy(request: Request, user: dict = Depends(current_user)):
+    cl = request.headers.get("content-length", "")
+    try:
+        if cl and int(cl) > 2_000_000:
+            raise HTTPException(413, "请求体过大")
+    except ValueError:
+        pass
+    try:
+        body = json.loads(await request.body() or b"{}")
+    except Exception:
+        raise HTTPException(400, "请求体不是合法 JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "请求体格式错误")
+
+    base = await _validate_base(body.get("base_url"), request)
+    api_key = str(body.get("api_key") or "")
+    if len(api_key) > 4096:
+        raise HTTPException(400, "API Key 过长")
+    method = str(body.get("method") or "GET").upper()
+    if method not in _EXT_METHODS:
+        raise HTTPException(400, "不支持的 HTTP 方法")
+    path = str(body.get("path") or "")
+    if not path.startswith("/") or len(path) > 2000:
+        raise HTTPException(400, "path 非法")
+    # 禁控制字符与空白（防请求走私/头注入）；允许常规 URL 字符含 ?query
+    if any(c.isspace() or ord(c) < 0x20 for c in path):
+        raise HTTPException(400, "path 含非法字符")
+    payload = body.get("body")
+    if payload is not None:
+        try:
+            payload_text = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "body 不是合法 JSON 结构")
+        if len(payload_text) > 1_000_000:
+            raise HTTPException(400, "body 过大")
+
+    target = base + path
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    timeout = httpx.Timeout(60.0, connect=15.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            resp = await client.request(method, target, json=payload, headers=headers)
+            raw = resp.content
+            if len(raw) > _EXT_MAX_RESP:
+                raw = raw[:_EXT_MAX_RESP]
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("utf-8", errors="replace")
+            return {"status": resp.status_code, "body": text}
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"上游请求失败: {_sanitize_error(type(e).__name__)}")

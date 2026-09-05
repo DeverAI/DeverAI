@@ -180,7 +180,7 @@ const IDB = {
   _open() {
     return new Promise((resolve, reject) => {
       if (this._db) return resolve(this._db);
-      const req = indexedDB.open('deverai', 2);
+      const req = indexedDB.open('deverai', 3);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('vault')) {
@@ -192,6 +192,11 @@ const IDB = {
         }
         if (!db.objectStoreNames.contains('fs-root')) {
           db.createObjectStore('fs-root', { keyPath: 'id' });
+        }
+        // v8.22：Agent 长期记忆（事实/经验教训/偏好；浏览器本地，服务端不落盘）
+        if (!db.objectStoreNames.contains('memory')) {
+          const st = db.createObjectStore('memory', { keyPath: 'id' });
+          st.createIndex('kind', 'kind', { unique: false });
         }
       };
       req.onsuccess = () => { this._db = req.result; resolve(this._db); };
@@ -261,6 +266,8 @@ const CFG_DEFAULT = {
   ENABLE_EMBEDDING_API: true,
   embedding_model: '',
   low_memory_mode: false,
+  // v8.16 多会话标签（关闭=隐藏标签条，回单会话行为）
+  ENABLE_MULTI_SESSION: true,
   // v8.3 建议系统（TRAE CUE 式，消息发送完成时展示精选建议）
   ENABLE_SUGGEST: true,
   // v8.4 Python 应用截图 / UI 自截图确认
@@ -287,6 +294,8 @@ const CFG_DEFAULT = {
   ENABLE_BROWSER_CTL: true,
   ENABLE_BROWSER_DEVTOOLS: true,
   ENABLE_EXE_JOURNAL: true,
+  // v8.23 外部软件（exe）自动化：启动/枚举窗口/截图/点击/输入/按键/关闭
+  ENABLE_EXE_AUTOMATE: true,
   // v8.10 工作轨迹高级能力（手动标记 / 区间查询 / 操作筛选 / 详情预览）
   ENABLE_TRACE_ADVANCED: true,
   // v2.0 语音助手「小龙」（关闭即隐藏入口、不注册 RPC）
@@ -312,6 +321,9 @@ const CFG_DEFAULT = {
   token_mode: false,
   // v8.13：Agent 形态（chat=只读工具 / builder=完整构建；experts 网页版未开放）
   agent_mode: 'builder',
+  // v8.22 基础能力：Agent 记忆 / 出关审核 / 外部 API 清单
+  ENABLE_MEMORY: true,
+  ENABLE_OUTBOUND_GATE: true,
 };
 
 function loadConfig() {
@@ -425,6 +437,40 @@ async function loadHistory() {
     return [];
   }
 }
+
+/* ---------- v8.22：外部 API 清单（用户授权给 AI 的第三方 API；localStorage 本地存储） ---------- */
+const EXTAPI_KEY = 'deverai.extapis.v1';
+const ExtAPIs = {
+  _load() {
+    try {
+      const raw = localStorage.getItem(EXTAPI_KEY);
+      const list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list.filter((x) => x && x.name && x.base_url) : [];
+    } catch (e) { return []; }
+  },
+  _save(list) {
+    try { localStorage.setItem(EXTAPI_KEY, JSON.stringify(list)); } catch (e) {}
+  },
+  list() { return this._load(); },
+  names() { return this._load().map((x) => x.name); },
+  get(name) { return this._load().find((x) => x.name === String(name || '').trim()) || null; },
+  upsert(item) {
+    const list = this._load();
+    const name = String(item.name || '').trim();
+    const base = String(item.base_url || '').trim();
+    if (!name || !/^[\w.-]{1,64}$/.test(name)) return false;
+    if (!/^https?:\/\/.+\..+/.test(base) || base.length > 500) return false;
+    const idx = list.findIndex((x) => x.name === name);
+    const clean = { name, base_url: base, api_key: String(item.api_key || '').slice(0, 4096), desc: String(item.desc || '').slice(0, 200) };
+    if (idx >= 0) list[idx] = { ...list[idx], ...clean };
+    else list.push({ id: uid(), ...clean });
+    this._save(list);
+    return true;
+  },
+  remove(name) {
+    this._save(this._load().filter((x) => x.name !== name));
+  },
+};
 
 /* ---------- v8.13：多任务会话（左栏 Tasks/Chats 真实接线） ---------- */
 const TASK_KEY = 'deverai.v2.tasks';

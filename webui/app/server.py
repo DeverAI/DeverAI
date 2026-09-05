@@ -17,8 +17,11 @@ import datetime
 import hashlib
 import hmac
 import io
+import re
+import time
 import zipfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -453,3 +456,175 @@ async def api_errs_clear(user: dict = Depends(auth.current_user)):
     from .errors import clear_errors
     clear_errors()
     return {"ok": True}
+
+
+# v8.17 安全中心：审计日志读取与清空
+@app.get("/api/security/audit")
+async def api_security_audit(user: dict = Depends(auth.current_user)):
+    from .security import read_audit
+    return {"entries": read_audit(200)}
+
+
+@app.post("/api/security/audit/clear")
+async def api_security_audit_clear(user: dict = Depends(auth.current_user)):
+    from .security import clear_audit
+    clear_audit()
+    return {"ok": True}
+
+
+# v8.22：SMTP 发件状态（泄露报告邮件通知的前置探测）
+@app.get("/api/security/smtp_status")
+async def api_smtp_status(user: dict = Depends(auth.current_user)):
+    from . import mailer
+    return {"configured": mailer.is_configured()}
+
+
+# v8.22：heartbeat 泄露检查——本地项目敏感凭证扫描 + 外部 API 厂商存活心跳 + 可选 SMTP 报告
+# 密钥模式（命中即视为疑似泄露，回显时截断脱敏）
+_LEAK_PATTERNS = [
+    (r"sk-ant-[A-Za-z0-9_-]{20,}", "Anthropic Key"),
+    (r"sk-[A-Za-z0-9_-]{32,}", "OpenAI 风格 Key"),
+    (r"AKIA[0-9A-Z]{16}", "AWS Access Key"),
+    (r"gh[pousr]_[A-Za-z0-9]{30,}", "GitHub Token"),
+    (r"AIza[0-9A-Za-z_-]{30,}", "Google API Key"),
+    (r"xox[baprs]-[A-Za-z0-9-]{10,}", "Slack Token"),
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "私钥文件"),
+    (r"(?i)(api_key|apikey|secret|token|password)\s*[:=]\s*['\"][^'\"\s]{20,}['\"]", "配置中的凭证"),
+]
+_LEAK_SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv",
+                   ".idea", ".vscode", "dist", "build", "backups", "data", ".worktrees"}
+_LEAK_MAX_FILES = 20000       # 扫描文件数上限
+_LEAK_MAX_FILE_SIZE = 2 * 1024 * 1024  # 单文件读取上限 2MB
+_LEAK_MAX_FINDINGS = 200      # 发现条数上限
+_LEAK_MAX_VENDORS = 20        # 心跳厂商数上限
+_LEAK_TEXT_EXTS = {".txt", ".md", ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+                   ".conf", ".env", ".py", ".js", ".ts", ".html", ".css", ".xml",
+                   ".sh", ".bat", ".ps1", ".sql", ".go", ".rs", ".java"}
+
+
+def _redact_secret(s: str) -> str:
+    return s[:8] + "..." if len(s) > 12 else "***"
+
+
+def _scan_workspace_secrets() -> list[dict]:
+    """扫描已授权工作区中的疑似泄露凭证。路径以相对路径回显（不暴露绝对路径）。"""
+    import os
+    from .bridge import _workspace
+    try:
+        root = _workspace()
+    except Exception:
+        return []
+
+    findings: list[dict] = []
+    files_checked = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _LEAK_SKIP_DIRS]
+        for fn in filenames:
+            if files_checked >= _LEAK_MAX_FILES or len(findings) >= _LEAK_MAX_FINDINGS:
+                return findings
+            ext = os.path.splitext(fn)[1].lower()
+            p = Path(dirpath) / fn
+            try:
+                if p.stat().st_size > _LEAK_MAX_FILE_SIZE:
+                    continue
+            except OSError:
+                continue
+            if ext and ext not in _LEAK_TEXT_EXTS and not fn.startswith(".env"):
+                continue
+            files_checked += 1
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if len(findings) >= _LEAK_MAX_FINDINGS:
+                    break
+                for pat, label in _LEAK_PATTERNS:
+                    m = re.search(pat, line)
+                    if m:
+                        rel = p.relative_to(root).as_posix()
+                        findings.append({
+                            "file": rel[:200], "line": lineno, "kind": label,
+                            "preview": _redact_secret(m.group(0)),
+                        })
+                        break
+    return findings
+
+
+@app.post("/api/security/leak_scan")
+async def api_security_leak_scan(body: dict, user: dict = Depends(auth.current_user)):
+    import httpx
+    from .security import audit as audit_log
+    from .bridge import _workspace
+
+    vendors_in = body.get("vendors")
+    vendors = []
+    if isinstance(vendors_in, list):
+        for v in vendors_in[:_LEAK_MAX_VENDORS]:
+            if isinstance(v, dict) and str(v.get("base_url") or "").startswith(("http://", "https://")):
+                vendors.append({"name": str(v.get("name") or "")[:60],
+                                "base_url": str(v["base_url"])[:500]})
+    notify_email = str(body.get("notify_email") or "").strip()[:200]
+
+    # 1) 本地项目泄露扫描（工作区未授权时返回提示而非报错，检查仍可跑厂商心跳）
+    findings: list[dict] = []
+    ws_note = ""
+    try:
+        _workspace()
+        findings = await asyncio.to_thread(_scan_workspace_secrets)
+    except Exception:
+        ws_note = "本地工作区未授权，跳过本地文件扫描（仅执行厂商心跳）"
+
+    # 2) 厂商心跳：HEAD 探活（SSRF 约束——只允许公网地址，复用 proxy 的校验器）
+    from .proxy import _is_private_nonloopback, _is_loopback
+    vendor_results = []
+    for v in vendors:
+        entry = {"name": v["name"], "base_url": v["base_url"], "status": None, "latency_ms": None, "error": ""}
+        try:
+            host = urlparse(v["base_url"]).hostname or ""
+            if not host or _is_loopback(host) or _is_private_nonloopback(host):
+                entry["error"] = "地址非法（内网/环回）"
+            else:
+                t0 = time.time()
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=8.0)) as client:
+                    resp = await client.head(v["base_url"], follow_redirects=False)
+                    entry["status"] = resp.status_code
+                entry["latency_ms"] = int((time.time() - t0) * 1000)
+        except Exception as e:
+            entry["error"] = type(e).__name__
+        vendor_results.append(entry)
+
+    # 3) SMTP 报告（仅在有问题且填了收件邮箱时发送）
+    smtp_sent = False
+    smtp_note = ""
+    vendor_down = [v for v in vendor_results if v["error"] or (v["status"] and v["status"] >= 500)]
+    if notify_email and (findings or vendor_down):
+        lines = ["DeverAI heartbeat 泄露检查报告", "=" * 40, ""]
+        if findings:
+            lines.append(f"[!] 本地疑似泄露 {len(findings)} 处：")
+            for f in findings[:50]:
+                lines.append(f"  - {f['file']}:{f['line']} ({f['kind']}) {f['preview']}")
+            lines.append("")
+        if vendor_down:
+            lines.append(f"[!] 厂商异常 {len(vendor_down)} 个：")
+            for v in vendor_down:
+                lines.append(f"  - {v['name']} {v['base_url']} → {v['error'] or ('HTTP ' + str(v['status']))}")
+            lines.append("")
+        if not findings and not vendor_down:
+            lines.append("[OK] 未发现问题。")
+        ok, reason = mailer.send_text_email(
+            notify_email, "DeverAI 泄露检查报告 " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "\n".join(lines))
+        smtp_sent = ok
+        if not ok:
+            smtp_note = reason
+
+    audit_log("leak_scan", user=user.get("name", ""), detail=f"findings={len(findings)} vendors={len(vendor_results)}")
+    return {
+        "findings": findings,
+        "vendors": vendor_results,
+        "ws_note": ws_note,
+        "smtp_sent": smtp_sent,
+        "smtp_note": smtp_note,
+        "smtp_configured": mailer.is_configured(),
+    }

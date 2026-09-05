@@ -28,6 +28,8 @@ def save_json(path: Path, data: Any) -> None:
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())  # v8.15：落盘后再原子替换，断电不留空/截断文件
         os.replace(tmp, path)
     finally:
         if tmp.exists():
@@ -54,6 +56,8 @@ def save_text(path: Path, text: str, eol: bool | None = None) -> None:
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())  # v8.15：落盘后再原子替换，断电不留空/截断文件
         os.replace(tmp, path)
     finally:
         if tmp.exists():

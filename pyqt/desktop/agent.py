@@ -315,12 +315,17 @@ class Agent:
             try:
                 text, calls, finish, usage, visible_tools = await self._consume_stream(msgs)
             except LLMError as e:
+                # v8.15 检修：异常/取消轮此前直接 raise 跳过历史落账，但工具副作用已发生
+                # （文件已写/命令已跑），下一轮 AI 对自己半途的改动毫无记忆——先入档再抛
+                self.history = full_history + self._exchange
                 raise
             except asyncio.CancelledError:
                 self._cancel.set()
+                self.history = full_history + self._exchange
                 raise  # 必须重抛：让 wait_for 熔断 / 取消真正生效（S2）
             except Exception as e:
                 log_error("Agent 流式对话异常", e)
+                self.history = full_history + self._exchange
                 raise
 
             if usage:
@@ -530,16 +535,18 @@ class Agent:
                     "output": raw_output,
                     "meta": result.get("meta", {}),
                 })
+                # v8.17：生成唯一占位 id，防 OpenAI API 400（要求非空 tool_call_id）
+                _denied_id = f"denied_{id(self):x}_{len(self.tool_log)}"
                 messages.append({
                     "role": "assistant",
                     "content": text or None,
                     "tool_calls": [{
-                        "id": "",
+                        "id": _denied_id,
                         "type": "function",
                         "function": {"name": name, "arguments": ""},
                     }],
                 })
-                messages.append({"role": "tool", "tool_call_id": "", "content": raw_output})
+                messages.append({"role": "tool", "tool_call_id": _denied_id, "content": raw_output})
                 text = ""
                 continue
             args_str = str(call.get("arguments") or "")
@@ -564,7 +571,7 @@ class Agent:
                 else:
                     if name == "search_tool":
                         # v5: 注入当前可见工具集，供元工具区分已裁剪隐藏的工具
-                        args["_visible"] = [d["function"]["name"] for d in self._tool_defs()]
+                        args["_visible"] = [d["function"]["name"] for d in await asyncio.to_thread(self._tool_defs)]
                     ctx = ToolContext(
                         cfg=self.cfg,
                         emit=self.emit,

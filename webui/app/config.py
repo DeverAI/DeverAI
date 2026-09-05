@@ -10,7 +10,9 @@ from pathlib import Path
 from .storage import load_json, save_json
 
 APP_DIR = Path(__file__).resolve().parent.parent.parent  # project root (DeverAI/)
-DATA_DIR = APP_DIR / "data"
+# v8.16：数据目录可用 DEVERAI_DATA_DIR 隔离（冒烟测试/多实例共用同一代码副本）；
+# 未设置时行为与历史版本完全一致（沿用 APP_DIR/data）
+DATA_DIR = Path(os.environ.get("DEVERAI_DATA_DIR") or (APP_DIR / "data"))
 CONFIG_PATH = DATA_DIR / "server_config.json"
 
 

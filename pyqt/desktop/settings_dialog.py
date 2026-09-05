@@ -43,6 +43,7 @@ SWITCHES = [
     ("ALLOW_AI_DELETE", "允许 AI 删除文件（危险）"),
     ("ENABLE_CTX_EXPERT", "上下文守门专家（自动省略古早上下文）"),
     ("ENABLE_STREAM_COMPLETE", "逐行流式自动补全"),
+    ("ENABLE_MULTI_SESSION", "多会话标签（聊天区顶部可新建/重命名/关闭多个对话）"),
     ("ENABLE_EXPERTS", "专家团（总司令规划 + 专家并行）"),
     ("ENABLE_LOCKS", "租约锁 + 重要文档保护"),
     ("ENABLE_WEB_SEARCH", "联网搜索"),
@@ -154,6 +155,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_workspace_tab(), "Worktree")
         tabs.addTab(self._build_indexing_tab(), "Indexing")
         tabs.addTab(self._build_integrations_tab(), "Integrations")
+        tabs.addTab(self._build_security_tab(), "Security")   # v8.17 安全中心
         tabs.addTab(self._build_appearance_tab(), "Advanced")
 
         layout.addWidget(tabs)
@@ -456,6 +458,172 @@ class SettingsDialog(QDialog):
         return page
 
     # ------------------------------------------------------------------
+    # v8.17 安全中心
+    # ------------------------------------------------------------------
+    def _build_security_tab(self) -> QWidget:
+        """安全中心：状态卡片 + 审计日志流水 + 导出/清空。"""
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        v = QVBoxLayout(body)
+
+        # ---- 状态卡片 ----
+        g_cmd = self._info_card("命令安全",
+            "危险命令审批门始终开启（danger_ok 严格校验），"
+            f"危险模式 {len(self._dangerous_patterns())} 条（含 v8.15 别名短参补漏）。")
+        v.addWidget(g_cmd)
+
+        g_file = self._info_card("文件安全",
+            "只读保护名单内置（Windows 大小写归一），"
+            f"保护 {len(self._protected_names())} 个文件/目录名。")
+        v.addWidget(g_file)
+
+        g_net = self._info_card("网络安全",
+            "SSRF 自环防护强制开启（数值 IP 归一 + 自环端口检测）；"
+            f"LLM 环回允许：{'开启' if getattr(self.cfg, 'llm_allow_loopback', True) else '关闭'}。")
+        v.addWidget(g_net)
+
+        g_id = self._info_card("身份验证",
+            "HMAC Cookie + Bearer Token 双通道鉴权；会话 TTL "
+            f"{getattr(self.cfg, 'session_ttl_hours', 72)} 小时。")
+        v.addWidget(g_id)
+
+        # ---- 安全开关聚合 ----
+        g_sw = QGroupBox("安全开关")
+        sw_v = QVBoxLayout(g_sw)
+        self.sw_allow_delete = QCheckBox("允许 AI 删除文件（allow_ai_delete）")
+        self.sw_allow_delete.setChecked(getattr(self.cfg, "allow_ai_delete", False))
+        sw_v.addWidget(self.sw_allow_delete)
+        self.sw_power_auth = QCheckBox("已授权电源操作（power_authorized）")
+        self.sw_power_auth.setChecked(getattr(self.cfg, "power_authorized", False))
+        sw_v.addWidget(self.sw_power_auth)
+        self.sw_llm_loopback = QCheckBox("允许 LLM 环回地址（llm_allow_loopback）")
+        self.sw_llm_loopback.setChecked(getattr(self.cfg, "llm_allow_loopback", True))
+        sw_v.addWidget(self.sw_llm_loopback)
+        v.addWidget(g_sw)
+
+        # ---- 审计日志 ----
+        g_audit = QGroupBox("审计日志（最近 50 条）")
+        audit_v = QVBoxLayout(g_audit)
+        self.audit_log = QPlainTextEdit()
+        self.audit_log.setReadOnly(True)
+        self.audit_log.setMaximumHeight(260)
+        self.audit_log.setPlaceholderText("暂无审计记录")
+        audit_v.addWidget(self.audit_log)
+        audit_row = QHBoxLayout()
+        btn_refresh = QPushButton("刷新")
+        btn_refresh.clicked.connect(self._load_audit)
+        btn_export = QPushButton("导出")
+        btn_export.clicked.connect(self._export_audit)
+        btn_clear = QPushButton("清空审计日志")
+        btn_clear.clicked.connect(self._clear_audit)
+        audit_row.addWidget(btn_refresh)
+        audit_row.addWidget(btn_export)
+        audit_row.addWidget(btn_clear)
+        audit_row.addStretch(1)
+        audit_v.addLayout(audit_row)
+        v.addWidget(g_audit)
+
+        # ---- 错误日志 ----
+        g_err = QGroupBox("错误日志（Err.log）")
+        err_v = QVBoxLayout(g_err)
+        self.err_log = QPlainTextEdit()
+        self.err_log.setReadOnly(True)
+        self.err_log.setMaximumHeight(160)
+        err_v.addWidget(self.err_log)
+        err_row = QHBoxLayout()
+        btn_err_refresh = QPushButton("刷新")
+        btn_err_refresh.clicked.connect(self._load_err)
+        btn_err_clear = QPushButton("清空")
+        btn_err_clear.clicked.connect(self._clear_err)
+        err_row.addWidget(btn_err_refresh)
+        err_row.addWidget(btn_err_clear)
+        err_row.addStretch(1)
+        err_v.addLayout(err_row)
+        v.addWidget(g_err)
+
+        v.addStretch(1)
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
+        self._load_audit()
+        self._load_err()
+        return page
+
+    @staticmethod
+    def _dangerous_patterns() -> list[str]:
+        from .tools import DANGEROUS_PATTERNS
+        return list(DANGEROUS_PATTERNS) if DANGEROUS_PATTERNS else []
+
+    @staticmethod
+    def _protected_names() -> list[str]:
+        from .tools import PROTECTED_NAMES
+        return list(PROTECTED_NAMES) if PROTECTED_NAMES else []
+
+    def _load_audit(self):
+        try:
+            from .audit import list_audits
+            entries = list_audits(tail=50)
+            lines = [f"[{e.get('ts','')}] {e.get('action','')} {e.get('user','')} "
+                     f"{e.get('ip','')} {e.get('detail','')}" for e in entries]
+            self.audit_log.setPlainText("\n".join(lines) if lines else "暂无审计记录")
+        except Exception as ex:
+            self.audit_log.setPlainText(f"加载失败：{ex}")
+
+    def _export_audit(self):
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "导出审计日志", "audit.jsonl", "*.jsonl")
+        if not path:
+            return
+        try:
+            from .config import DATA_DIR
+            src = DATA_DIR / "audit.jsonl"
+            if src.exists():
+                from pathlib import Path
+                Path(path).write_bytes(src.read_bytes())
+                QMessageBox.information(self, "导出", f"审计日志已导出 ({src.stat().st_size} 字节)。")
+            else:
+                QMessageBox.information(self, "导出", "审计日志文件不存在。")
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+
+    def _clear_audit(self):
+        if QMessageBox.question(self, "清空审计日志",
+                                "确定清空全部审计记录？此操作不可逆。"
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from .config import DATA_DIR
+            fp = DATA_DIR / "audit.jsonl"
+            if fp.exists():
+                fp.write_text("", encoding="utf-8")
+            self._load_audit()
+            QMessageBox.information(self, "清空", "审计日志已清空。")
+        except Exception as e:
+            QMessageBox.warning(self, "清空失败", str(e))
+
+    def _load_err(self):
+        try:
+            from .errors import read_errors
+            self.err_log.setPlainText(read_errors() or "暂无错误记录")
+        except Exception as ex:
+            self.err_log.setPlainText(f"加载失败：{ex}")
+
+    def _clear_err(self):
+        if QMessageBox.question(self, "清空错误日志",
+                                "确定清空 Err.log？"
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from .errors import clear_errors
+            clear_errors()
+            self._load_err()
+        except Exception as e:
+            QMessageBox.warning(self, "清空失败", str(e))
+
+    # ------------------------------------------------------------------
     def _build_appearance_tab(self) -> QWidget:
         """v4：主题选择 + 逐色编辑 + JSON 导入导出 + 托盘/窗口限制。"""
         page = QWidget()
@@ -720,6 +888,9 @@ class SettingsDialog(QDialog):
         for m in load_models():
             # v8.5.6：卡片式渲染（模型名 + kind + ID + 价格摘要）
             w = QWidget()
+            # v8.15 检修：命名后置透明——通用 QWidget{background} 会把行刷成窗口底色
+            # 实心条，遮住列表 panel 底色与选中高亮
+            w.setObjectName("modelrow")
             v = QVBoxLayout(w)
             v.setContentsMargins(10, 8, 10, 8)
             v.setSpacing(2)

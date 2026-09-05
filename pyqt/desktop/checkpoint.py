@@ -37,6 +37,31 @@ def source_name(source: str) -> str:
     return _SOURCE_NAMES.get(str(source or "").strip() or "ai", str(source or "ai"))
 
 
+def _gc_orphans(max_age_s: float = 86400.0) -> int:
+    """v8.15 检修：清理无 meta 的孤儿 .bak。
+
+    save_checkpoint 先写 .bak 后写 meta，进程在两步之间崩溃会留下永久孤儿
+    （_scan 只认带 meta 条目，_gc 永远清不到）。超过 max_age_s（默认 1 天）
+    的无 meta .bak 判定为写入中断残留，直接删除。返回删除数。
+    """
+    if not CHECKPOINT_DIR.exists():
+        return 0
+    removed = 0
+    now = datetime.datetime.now().timestamp()
+    try:
+        for bak in CHECKPOINT_DIR.rglob("*.bak"):
+            try:
+                meta = bak.with_suffix(bak.suffix + ".meta")
+                if not meta.exists() and (now - bak.stat().st_mtime) > max_age_s:
+                    bak.unlink(missing_ok=True)
+                    removed += 1
+            except OSError:
+                continue
+    except Exception as e:
+        log_error("checkpoint 孤儿回收失败", e)
+    return removed
+
+
 def _safe_name(rel_path: str) -> str:
     """把相对路径转成安全文件名（/ → __），防目录穿透。
 
@@ -99,6 +124,7 @@ def _scan() -> list:
     """读全部 checkpoint（不截断）。每条 {bak_path, rel_path, ts, task_id, source}。"""
     if not CHECKPOINT_DIR.exists():
         return []
+    _gc_orphans()
     out = []
     try:
         for meta in CHECKPOINT_DIR.rglob("*.bak.meta"):

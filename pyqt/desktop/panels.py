@@ -161,12 +161,20 @@ class FileTree(QTreeWidget):
         rel = item.data(0, Qt.ItemDataRole.UserRole) if item else ""
         is_dir = item.data(0, Qt.ItemDataRole.UserRole + 1) if item else False
         menu = QMenu(self)
+        # v8.15 检修：占位行（尚未选择工作区/加载中/空目录标记）无 UserRole 数据
+        # （rel=None），此前"新建/重命名/删除"照常入菜单，点击即 Path(None) TypeError——
+        # PyQt6 槽内未捕获异常默认 qFatal 直接整个应用 abort。占位行只留刷新。
+        if item is not None and rel is None:
+            menu.addAction("刷新", lambda: self.set_workspace(self.workspace))
+            menu.exec(self.viewport().mapToGlobal(pos))
+            return
         if item and not is_dir:
             menu.addAction("打开", lambda: self.file_activated.emit(rel))
-        menu.addAction("新建文件", lambda: self._new_file(rel, is_dir))
-        menu.addAction("新建文件夹", lambda: self._new_folder(rel, is_dir))
-        menu.addAction("重命名", lambda: self._rename(rel))
-        if item:
+        if rel is not None:
+            menu.addAction("新建文件", lambda: self._new_file(rel, is_dir))
+            menu.addAction("新建文件夹", lambda: self._new_folder(rel, is_dir))
+            menu.addAction("重命名", lambda: self._rename(rel))
+        if item and rel is not None:
             # v8.14：恢复手动删除入口（此前恒 disabled 成死功能）；确认框默认 No 防误删
             menu.addAction("删除", lambda r=rel: self._delete(r))
         menu.addAction("刷新", lambda: self.set_workspace(self.workspace))
@@ -274,11 +282,19 @@ class VaultPanel(QWidget):
             return  # 上一次搜索仍在进行，忽略重复回车
         self._search_thread = _VaultSearchThread(self.vault, q, self)
         self._search_thread.ready.connect(self._fill_results)
-        self._search_thread.fail.connect(
-            lambda msg: QMessageBox.warning(self, "搜索失败", msg))
-        self._search_thread.finished.connect(lambda: self.search.setPlaceholderText("检索资产…"))
+        # v8.15 检修：lambda 无 QObject 接收者 → 工作线程内直连执行，
+        # 会在非 GUI 线程创建 QMessageBox（Qt 硬性违例，可崩溃）——改绑定方法走队列
+        self._search_thread.fail.connect(self._on_search_fail)
+        self._search_thread.finished.connect(self._on_search_done)
+        self._search_thread.finished.connect(self._search_thread.deleteLater)
         self.search.setPlaceholderText("搜索中…")
         self._search_thread.start()
+
+    def _on_search_fail(self, msg: str):
+        QMessageBox.warning(self, "搜索失败", msg)
+
+    def _on_search_done(self):
+        self.search.setPlaceholderText("检索资产…")
 
     def _fill_results(self, hits):
         self.listw.clear()
@@ -413,9 +429,14 @@ class TerminalPanel(QWidget):
             return
         t = _CmdThread(cmd, self._cwd, self)
         t.line_ready.connect(self.out.appendPlainText)
-        t.done.connect(lambda rc: self.out.appendPlainText(f"[退出码 {rc}]"))
+        # v8.15 检修：done 在工作线程 emit，lambda 直连会在非 GUI 线程操作 QPlainTextEdit
+        t.done.connect(self._on_cmd_done)
+        t.finished.connect(t.deleteLater)
         self._threads.append(t)
         t.start()
+
+    def _on_cmd_done(self, rc: int):
+        self.out.appendPlainText(f"[退出码 {rc}]")
 
     def append(self, text: str):
         self.out.appendPlainText(text)
@@ -492,28 +513,50 @@ class HealthDashboard(QWidget):
 
     def set_workspace(self, path: str):
         self._workspace = str(path or "")
+        # v8.15 检修：切换工作区立即作废在途扫描（其结果属于旧目录，不得渲染到新视图）
+        self._gen = getattr(self, "_gen", 0) + 1
         if self._workspace:
             self._timer.start()
             self.refresh()
         else:
             self._timer.stop()
+            self._view.setHtml("<i>未选择工作区。</i>")
 
     def refresh(self):
-        """触发后台计算（避免大目录扫描阻塞 UI）。"""
+        """触发后台计算（避免大目录扫描阻塞 UI）。
+
+        v8.15 检修：①在途扫描时直接跳过（此前 60s 定时器可叠加并发多个扫描线程，
+        大目录/网络盘上无限增殖）；②代次校验——旧扫描后完成不得覆盖新数据。
+        """
         if not self._workspace:
             self._view.setHtml("<i>未选择工作区。</i>")
             return
+        if getattr(self, "_scan_thread", None) and self._scan_thread.isRunning():
+            return
         self._btn.setEnabled(False)
         self._btn.setText("统计中…")
+        self._gen = getattr(self, "_gen", 0) + 1
         # 无 parent + 模块级保活集合：防主窗口关闭时子控件销毁连带 QThread 活销毁
         t = _HealthScanThread(self._workspace)
+        t.expected_gen = self._gen          # v8.15：渲染时代次比对用（经 sender() 读取）
+        t.scan_ws = self._workspace         # v8.15：记录扫描目标，供切工作区后补扫判断
+        self._scan_thread = t
         _SCAN_THREADS.add(t)
-        t.finished_scan.connect(self._render)
+        t.finished_scan.connect(self._render)   # 绑定方法 → AutoConnection 队列化到 GUI 线程
         t.finished.connect(lambda th=t: _SCAN_THREADS.discard(th))
         t.finished.connect(t.deleteLater)
         t.start()
 
     def _render(self, data: dict):
+        st = self.sender()
+        # v8.15 检修：扫描目标与当前工作区不符（切换发生在在途期间）→ 丢弃并立即补扫当前目录。
+        # 注意必须先于代次判断——set_workspace 已抬升代次，若先因代次早退，B 工作区的
+        # 补扫将永远不触发（只能等 60s 定时器）。
+        if self._workspace and getattr(st, "scan_ws", "") != self._workspace:
+            self.refresh()
+            return
+        if st is not None and getattr(st, "expected_gen", None) != getattr(self, "_gen", None):
+            return  # 旧扫描晚到，不得覆盖新数据
         self._btn.setEnabled(True)
         self._btn.setText("刷新")
         # v8.3 P0 报警：健康度极低或报错率爆表 → 通知主窗口只读

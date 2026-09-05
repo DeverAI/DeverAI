@@ -13,6 +13,7 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,14 @@ DIPLOMATIC_TOOLS = {
 
 PROTECTED_NAMES = {"pyqt", "webui", "lite", "data", "backups", "dev_log", "updates", "tests", "tools"}
 PROTECTED_FILES = {"Err.log", "config.json"}
+# v8.15 检修：Windows 文件系统大小写不敏感，目录改名 Data/ERR.LOG 后保护不得静默失效——
+# 判定统一小写比较（对齐 webui/app/bridge.py 与 lite/app/lite_server.py 的同源修复）
+PROTECTED_NAMES_LC = {n.lower() for n in PROTECTED_NAMES}
+PROTECTED_FILES_LC = {n.lower() for n in PROTECTED_FILES}
+_READ_PROT_NAMES_LC = {"data", "backups"}
+_READ_PROT_FILES_LC = {"err.log", "config.json"}
+# v8.15：grep 扫描并发闸——超时放弃等待后底层正则线程不可中断，限流防堆积
+_GREP_SCAN_SEM = threading.Semaphore(2)
 SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", ".idea", ".vscode", "dist", "build"}
 
 # v5: 重要文档（AGENT.txt 文档清单）——仅总司令可写，其余专家工具层直接拒绝
@@ -54,6 +63,11 @@ DANGEROUS_PATTERNS = [
     r"\bpython(?:3)?\s+-c\b", r"\bpy\s+-c\b",
     r"\bpowershell\s+(?:-[a-z]+\s+)*-(?:command|enc)\b", r"\bcmd(?:\.exe)?\s+/[cq]\b",
     r"\bRemove-Item\b.*-Recurse\b", r"\bshutil\.rmtree\b", r"\bos\.remove\b",
+    # v8.15 检修：PowerShell 短参数/别名递归删除（Remove-Item -r、ri -Recurse 等）
+    # 此前只匹配全称 -Recurse，danger 模式下可免审批静默递归删除
+    r"\b(?:Remove-Item|ri|rm|del|erase|rmdir|rd)\b[^|\n;&]*\s-(?:recurse|r|rf|fr)\b",
+    # git clean 带 -f 才真正删文件（-fdx 清空全部未跟踪文件）
+    r"\bgit\s+clean\b[^|\n;&]*\s-[a-z]*f",
 ]
 
 
@@ -143,9 +157,9 @@ def _is_protected(ctx: ToolContext, p: Path) -> bool:
     parts = rel.parts
     if not parts:
         return False
-    if parts[0] in PROTECTED_NAMES:
+    if parts[0].lower() in PROTECTED_NAMES_LC:
         return True
-    if rel.name in PROTECTED_FILES:
+    if rel.name.lower() in PROTECTED_FILES_LC:
         return True
     return False
 
@@ -159,7 +173,9 @@ def _is_read_protected(ctx: ToolContext, p: Path) -> bool:
     parts = rel.parts
     if not parts:
         return False
-    return parts[0] in {"data", "backups"} or rel.name in {"Err.log", "config.json"}
+    # v8.15 检修：大小写不敏感比较（Windows），防 Data/ERR.LOG 变体绕过
+    return (parts[0].lower() in _READ_PROT_NAMES_LC
+            or rel.name.lower() in _READ_PROT_FILES_LC)
 
 
 def _is_important_doc(ctx: ToolContext, p: Path) -> bool:
@@ -203,7 +219,7 @@ def _safe_int(value, default: int = 0) -> int:
     """LLM 可控数值参数统一守卫：非数字字符串/异常类型回退默认值，不抛 RE。"""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -259,11 +275,21 @@ async def _content_copilot_guard(ctx: ToolContext, content: str) -> Optional[str
         verdict = await copilot_check(ctx.cfg, {"kind": "dangerous_code",
                                                 "content": content[:800]})
     except Exception:
-        return None
+        # v8.17：副驾驶不可用时升级用户审批（绝不静默放行）
+        return await _request_approval(
+            ctx, "write_file",
+            {"command": f"写入内容（副驾驶不可用，升级人工审批）",
+             "dangerous": True})
     if verdict.get("kill"):
         await _emit(ctx, {"type": "copilot_block", "note": verdict.get("note", ""),
                           "payload": {"kind": "dangerous_code"}})
         return f"副驾驶已掐断本次写入：{verdict.get('note', '内容含危险指令')}"
+    # v8.17：副驾驶不确定时升级用户审批（绝不静默放行）
+    if verdict.get("uncertain"):
+        return await _request_approval(
+            ctx, "write_file",
+            {"command": f"写入内容（副驾驶不确定，升级人工审批）",
+             "dangerous": True})
     return None
 
 
@@ -460,6 +486,16 @@ async def tool_write_file(args, ctx: ToolContext) -> dict:
     #   否则 CRLF 文件每次都显示整文件变更）
     if not await _request_diff_approval(ctx, str(rel), old, content):
         return {"ok": False, "output": f"用户拒绝了写入 {rel}（差异预览取消）。"}
+    # v8.15 检修：审批等待（最长 600s）期间文件可能被外部编辑器改动——
+    # check-then-act 竞态会让 AI 静默覆盖用户保存的内容，且轮内回退快照也记的是旧值
+    if existed:
+        try:
+            cur = p.read_text(encoding="utf-8", errors="replace")
+            if cur != old:
+                return {"ok": False,
+                        "output": f"[!] 审批期间 {rel} 已被外部修改，为防覆盖已中止。请重新发起写入（diff 将基于最新内容）。"}
+        except OSError:
+            pass
     # v8.3 轮内回退快照 + 工具调用记录（审批通过后，防幽灵回退点）
     try:
         from . import session_snap as _snap
@@ -476,7 +512,7 @@ async def tool_write_file(args, ctx: ToolContext) -> dict:
     except OSError as e:
         return _format_error(e)
     new_size = len(content.encode("utf-8"))
-    await _emit(ctx, {"type": "file_changed", "path": str(p), "rel": str(rel)})
+    await _emit(ctx, {"type": "file_changed", "path": str(rel)})
     # v8.3 依赖树增量更新
     try:
         from . import session_snap as _snap
@@ -549,6 +585,14 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
     # （v8.14b：diff 必须在行尾还原之前做，old/new 均为规范化 \n 形态）
     if not await _request_diff_approval(ctx, str(rel), text, new_text):
         return {"ok": False, "output": f"用户拒绝了编辑 {rel}（差异预览取消）。"}
+    # v8.15 检修：同 write_file——审批等待期间外部改动不得被静默覆盖
+    try:
+        cur = p.read_text(encoding="utf-8", errors="replace")
+        if cur != text:
+            return {"ok": False,
+                    "output": f"[!] 审批期间 {rel} 已被外部修改，为防覆盖已中止。请重新 read_file 后再编辑。"}
+    except OSError:
+        pass
     # v8.3 轮内回退快照 + 工具调用记录（审批通过后，防幽灵回退点）
     try:
         from . import session_snap as _snap
@@ -564,7 +608,7 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
         atomic_write(p, new_text)  # v5: 强制 CoW
     except OSError as e:
         return _format_error(e)
-    await _emit(ctx, {"type": "file_changed", "path": str(p), "rel": str(rel)})
+    await _emit(ctx, {"type": "file_changed", "path": str(rel)})
     # v8.3 依赖树增量更新
     try:
         from . import session_snap as _snap
@@ -653,7 +697,7 @@ async def tool_delete_file(args, ctx: ToolContext) -> dict:
             p.unlink()
     except OSError as e:
         return _format_error(e)
-    await _emit(ctx, {"type": "file_changed", "path": str(p), "rel": str(rel)})
+    await _emit(ctx, {"type": "file_changed", "path": str(rel)})
     # v8.9 回退审核：AI 删除文件/目录必须留审计记录
     try:
         from . import audit as _audit
@@ -755,8 +799,11 @@ async def tool_grep(args, ctx: ToolContext) -> dict:
         return results, scanned
 
     try:
-        results, scanned = await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(None, _search), timeout=30)
+        # v8.15 检修：超时只是放弃等待，executor 线程里的灾难性正则会继续烧 CPU——
+        # 信号量限制同时扫描数（2），防连续超时累积僵尸线程拖垮默认线程池
+        with _GREP_SCAN_SEM:
+            results, scanned = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, _search), timeout=30)
     except asyncio.TimeoutError:
         return {"ok": False, "output": "搜索超时（正则过于复杂或文件过多）。"}
     except (OSError, ValueError) as e:
@@ -825,7 +872,52 @@ async def tool_run_command(args, ctx: ToolContext) -> dict:
         timeout = 120
     timeout = min(max(timeout, 1), 600)
     background = _strict_bool(args.get("background"))
-    p = resolve_ws(ctx, cwd_rel) if cwd_rel else Path(ctx.workspace).resolve()
+    # v8.15 检修：background=true 的意义就是长耗时构建，仍套 600s 熔断自相矛盾——
+    # >10 分钟的后台构建必被杀树并以超时报完成。放宽到 4 小时（仍有界防失控）。
+    if background:
+        timeout = max(timeout, 4 * 3600)
+
+    # ---- v8.18：持久环境 / 更新间隔 / 任务后杀进程 + 默认值 warning ----
+    warnings: list[str] = []
+    if args.get("timeout") is None:
+        warnings.append(f"timeout 使用默认值 {timeout}s")
+    term_env = None
+    if args.get("env") is None:
+        warnings.append("env 使用默认值（一次性：工作区根 + 当前进程环境）")
+    else:
+        from . import terms as _terms
+        term_env = _terms.get_env(str(args.get("env")))
+        if term_env is None:
+            warnings.append(f"env '{str(args.get('env'))[:40]}' 不存在，已回退一次性会话")
+    try:
+        ui_val = args.get("update_interval")
+        if ui_val is None:
+            update_interval = 0.0
+            warnings.append("update_interval 使用默认值 0（不发送运行中心跳）")
+        else:
+            update_interval = min(max(float(ui_val), 0.0), 120.0)
+            if update_interval != update_interval:  # NaN
+                update_interval = 0.0
+    except (TypeError, ValueError):
+        update_interval = 0.0
+        warnings.append("update_interval 非法，使用默认值 0")
+    if args.get("kill_after") is None:
+        kill_after = True
+        warnings.append("kill_after 使用默认值 true（超时/停止时杀整棵进程树）")
+    else:
+        kill_after = _strict_bool(args.get("kill_after"))
+
+    # 环境落点：显式 cwd 优先，其次环境的 cwd_rel；环境变量合并进当前进程环境
+    env_vars: dict = dict(term_env.get("env_vars") or {}) if term_env else {}
+    env_cwd_abs = ""
+    if term_env and not cwd_rel:
+        env_cwd_abs = _terms.resolve_env_cwd_env(term_env)[0]
+    if env_cwd_abs:
+        p = Path(env_cwd_abs)
+    elif cwd_rel:
+        p = resolve_ws(ctx, cwd_rel)
+    else:
+        p = Path(ctx.workspace).resolve()
 
     # v8.5.x 审查修复：移除 LLM 可控的 _pre_approved 绕过——审批门是否放行统一由
     # _request_approval 内部四模式路由决定（ENABLE_APPROVAL/free/danger/copilot 均在其内处理）。
@@ -841,11 +933,11 @@ async def tool_run_command(args, ctx: ToolContext) -> dict:
     if background:
         if getattr(ctx.cfg, "low_memory_mode", False):
             # v6 低内存模式：不起额外后台进程，直接串行执行
-            return await _exec_command(ctx, cmd, p, timeout)
+            return await _exec_command(ctx, cmd, p, timeout, env_vars, update_interval, kill_after, warnings)
         from .background import get_bg_jobs  # v6 后台长任务登记
         jobs = get_bg_jobs()
         job_id = jobs.register(cmd)
-        task = asyncio.create_task(_exec_command(ctx, cmd, p, timeout))
+        task = asyncio.create_task(_exec_command(ctx, cmd, p, timeout, env_vars, update_interval, kill_after, warnings))
 
         def _done(t):
             try:
@@ -866,11 +958,16 @@ async def tool_run_command(args, ctx: ToolContext) -> dict:
         task.add_done_callback(_BG_TASKS.discard)
         return {"ok": True, "output": f"命令已在后台启动（异步构建，编号 {job_id}），"
                                        f"可回主对话继续其他事，完成后会自动提示：{cmd}"}
-    return await _exec_command(ctx, cmd, p, timeout)
+    return await _exec_command(ctx, cmd, p, timeout, env_vars, update_interval, kill_after, warnings)
 
 
 def _kill_tree(proc) -> None:
-    """终止进程树（Windows 用 taskkill /T 连子进程一起杀，避免孤儿进程）。"""
+    """终止进程树（Windows 用 taskkill /T 连子进程一起杀，避免孤儿进程）。
+
+    v8.15 检修：内部 subprocess.run(taskkill, timeout=10) 是同步阻塞——
+    在事件循环线程直接调用会冻结 GUI 最长 10s+，调用方一律走
+    `await asyncio.to_thread(_kill_tree, proc)`。
+    """
     if os.name == "nt":
         try:
             subprocess.run(
@@ -886,8 +983,11 @@ def _kill_tree(proc) -> None:
         pass
 
 
-async def _exec_command(ctx: ToolContext, cmd: str, cwd: Path, timeout: float) -> dict:
+async def _exec_command(ctx: ToolContext, cmd: str, cwd: Path, timeout: float, env_vars: dict | None = None, update_interval: float = 0.0, kill_after: bool = True, warnings: list | None = None) -> dict:
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    spawn_env = None
+    if env_vars:
+        spawn_env = {**os.environ, **{str(k): str(v) for k, v in env_vars.items()}}
     try:
         proc = await asyncio.create_subprocess_shell(
             cmd,
@@ -895,24 +995,37 @@ async def _exec_command(ctx: ToolContext, cmd: str, cwd: Path, timeout: float) -
             stderr=asyncio.subprocess.STDOUT,
             stdin=asyncio.subprocess.DEVNULL,
             cwd=str(cwd),
+            env=spawn_env,
             creationflags=creationflags,
         )
     except OSError as e:
         return _format_error(e)
+    # v8.18：默认值 warning 先行下发（AI 可见）
+    if warnings:
+        await _emit(ctx, {"type": "cmd_warning", "call_id": ctx.call_id, "warnings": warnings})
     lines = []
     truncated = 0
     total_bytes = 0
     deadline = time.monotonic() + timeout
+    started = time.monotonic()
     timed_out = False
+    left_running = False
     try:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 break
+            # v8.18：update_interval>0 时按间隔分片等待——静默期到点发心跳（K210 刷写静默场景）
+            chunk = min(remaining, update_interval) if update_interval > 0 else remaining
             try:
-                line = await asyncio.wait_for(proc.stdout.readline(), remaining)
+                line = await asyncio.wait_for(proc.stdout.readline(), chunk)
             except asyncio.TimeoutError:
+                if update_interval > 0 and time.monotonic() < deadline:
+                    tail = "\n".join(lines[-8:]) if lines else ""
+                    await _emit(ctx, {"type": "cmd_update", "call_id": ctx.call_id,
+                                     "elapsed_s": round(time.monotonic() - started, 1), "tail": tail})
+                    continue
                 timed_out = True
                 break
             if not line:
@@ -924,7 +1037,8 @@ async def _exec_command(ctx: ToolContext, cmd: str, cwd: Path, timeout: float) -
                 truncated += 1
             total_bytes += len(text) + 1
             if total_bytes > 8 * 1024 * 1024:
-                _kill_tree(proc)
+                if kill_after:
+                    await asyncio.to_thread(_kill_tree, proc)
                 truncated += 1
                 timed_out = True
                 break
@@ -934,21 +1048,32 @@ async def _exec_command(ctx: ToolContext, cmd: str, cwd: Path, timeout: float) -
                 truncated += 1
             await _emit(ctx, {"type": "cmd_output", "call_id": ctx.call_id, "line": text})
         if timed_out:
-            _kill_tree(proc)
-        # M-4: EOF 后进程可能仍存活（如 daemonize），wait 必须限时避免"假卡死"
-        try:
-            rc = await asyncio.wait_for(proc.wait(), timeout=15)
-        except asyncio.TimeoutError:
-            _kill_tree(proc)
+            # v8.18：kill_after=false → 超时不杀树，进程保留后台运行
+            if kill_after:
+                await asyncio.to_thread(_kill_tree, proc)
+            else:
+                left_running = True
+        if left_running:
+            rc = -1
+        else:
+            # M-4: EOF 后进程可能仍存活（如 daemonize），wait 必须限时避免"假卡死"
             try:
-                rc = await asyncio.wait_for(proc.wait(), timeout=10)
+                rc = await asyncio.wait_for(proc.wait(), timeout=15)
             except asyncio.TimeoutError:
-                rc = -1
-            timed_out = True
+                if kill_after:
+                    await asyncio.to_thread(_kill_tree, proc)
+                    try:
+                        rc = await asyncio.wait_for(proc.wait(), timeout=10)
+                    except asyncio.TimeoutError:
+                        rc = -1
+                    timed_out = True
+                else:
+                    left_running = True
+                    rc = -1
     except BaseException:
         # S3: CancelledError 继承自 BaseException，必须兜底杀子进程，避免孤儿进程
         if proc.returncode is None:
-            _kill_tree(proc)
+            await asyncio.to_thread(_kill_tree, proc)
         try:
             rc = await asyncio.wait_for(proc.wait(), timeout=10)
         except BaseException:
@@ -959,18 +1084,82 @@ async def _exec_command(ctx: ToolContext, cmd: str, cwd: Path, timeout: float) -
     if truncated:
         output += f"\n…(输出过长，已省略 {truncated} 行)"
     if timed_out:
-        output += f"\n[命令超时已熔断，> {int(timeout)}s]"
-    await _emit(ctx, {"type": "cmd_done", "call_id": ctx.call_id, "rc": rc})
+        kept = "（kill_after=false：进程已保留后台运行）" if left_running else ""
+        output += f"\n[命令超时已熔断，> {int(timeout)}s]{kept}"
+    # v8.18：默认值 warning 注入输出首行（AI 可见并可在下次显式传参）
+    warn_line = ("[WARN] 使用默认值：" + "；".join(warnings) + "\n") if warnings else ""
+    await _emit(ctx, {"type": "cmd_done", "call_id": ctx.call_id, "rc": rc, "left_running": left_running})
     try:
         cwd_rel = str(cwd.resolve().relative_to(Path(ctx.workspace).resolve())).replace("\\", "/")
     except Exception:
         cwd_rel = "."
-    meta = {"rc": rc, "cwd": cwd_rel}
+    meta = {"rc": rc, "cwd": cwd_rel, "left_running": left_running}
+    if warnings:
+        meta["warnings"] = warnings
     return {
         "ok": rc == 0,
-        "output": f"[退出码 {rc}] cwd={cwd_rel}\n{output}" if output else f"[退出码 {rc}] cwd={cwd_rel}\n(无输出)",
+        "output": warn_line + (f"[退出码 {rc}] cwd={cwd_rel}\n{output}" if output else f"[退出码 {rc}] cwd={cwd_rel}\n(无输出)"),
         "meta": meta,
     }
+
+
+
+# ---------------- v8.18 桌面端持久命令行环境 ----------------
+async def tool_term_create(args, ctx: ToolContext) -> dict:
+    """创建一个持久命令行环境（记住工作目录与环境变量）。"""
+    block = _readonly_block("term_create")
+    if block:
+        return block
+    from . import terms as _terms
+    try:
+        env = _terms.create_env(
+            name=str(args.get("name") or ""),
+            cwd_rel=str(args.get("cwd") or ""),
+            env_vars=args.get("env_vars") if args.get("env_vars") is not None else None,
+        )
+    except ValueError as e:
+        return {"ok": False, "output": str(e)}
+    except Exception as e:
+        return _format_error(e)
+    return {"ok": True, "output": "环境已创建：" + env["name"] + "（id: " + env["id"] + "）"}
+
+
+async def tool_term_list(args, ctx: ToolContext) -> dict:
+    """列出所有持久命令行环境。"""
+    from . import terms as _terms
+    try:
+        envs = _terms.list_envs()
+    except Exception as e:
+        return _format_error(e)
+    if not envs:
+        return {"ok": True, "output": "暂无持久命令行环境（可用 term_create 创建）。"}
+    lines = []
+    for e in envs:
+        rc = e.get("last_rc")
+        lines.append(
+            "- [" + e["id"] + "] " + e["name"] + " | cwd=" + (e.get("cwd_rel") or ".")
+            + " | last=" + (e.get("last_cmd") or "-")
+            + " | rc=" + (str(rc) if rc is not None else "-")
+        )
+    return {"ok": True, "output": "持久命令行环境（" + str(len(envs)) + "个：" + "\n".join(lines)}
+
+
+async def tool_term_delete(args, ctx: ToolContext) -> dict:
+    """删除一个持久命令行环境。"""
+    block = _readonly_block("term_delete")
+    if block:
+        return block
+    from . import terms as _terms
+    eid = str(args.get("id") or "").strip()
+    if not eid:
+        return {"ok": False, "output": "缺少 id 参数"}
+    try:
+        ok = _terms.delete_env(eid)
+    except Exception as e:
+        return _format_error(e)
+    if not ok:
+        return {"ok": False, "output": "环境不存在：" + eid}
+    return {"ok": True, "output": "已删除环境：" + eid}
 
 
 async def tool_workspace_info(args, ctx: ToolContext) -> dict:
@@ -2566,12 +2755,15 @@ def build_tool_defs(cfg: Config, expert_mode: bool = False, allow_delegate: bool
             "type": "function",
             "function": {
                 "name": "run_command",
-                "description": "在工作区中执行命令行（shell 命令），支持超时与后台运行。长耗时构建请使用 background=true。",
+                "description": "在工作区中执行命令行（shell 命令），支持超时与后台运行。长耗时构建请使用 background=true。未指定的可选参数按默认值执行并在结果中返回 warning。",
                 "parameters": _p({
                     "command": {"type": "string", "description": "要执行的完整命令"},
-                    "cwd": {"type": "string", "description": "工作目录（相对工作区）"},
+                    "cwd": {"type": "string", "description": "工作目录（相对工作区；指定 env 时默认用环境的目录）"},
                     "timeout": {"type": "integer", "description": "超时秒数，默认120，最大600"},
                     "background": {"type": "boolean", "description": "是否后台异步执行（用于长耗时构建，立即返回）"},
+                    "env": {"type": "string", "description": "持久命令行环境的 id 或名称（term_create 创建；同一环境多次执行继承 cwd 与环境变量）"},
+                    "update_interval": {"type": "number", "description": "更新间隔秒数 0-120：静默期到点把输出尾部心跳回传（长命令如固件刷写建议 10-30）。默认 0=不发心跳"},
+                    "kill_after": {"type": "boolean", "description": "超时/停止后是否杀整棵进程树，默认 true；false 时进程保留后台运行（适合保留服务器/烧录器守护）"},
                 }, ["command"]),
             },
         },
@@ -2581,6 +2773,37 @@ def build_tool_defs(cfg: Config, expert_mode: bool = False, allow_delegate: bool
                 "name": "workspace_info",
                 "description": "获取工作区与运行环境信息（OS、Python 版本、工作区路径）。",
                 "parameters": _p({}),
+            },
+        },
+        # v8.18 桌面端持久命令行环境
+        {
+            "type": "function",
+            "function": {
+                "name": "term_create",
+                "description": "创建一个持久命令行环境（记住工作目录与环境变量）。后续 run_command 通过 env 参数在该环境里多次执行命令，上下文（cwd/env）持续保留。",
+                "parameters": _p({
+                    "name": {"type": "string", "description": "环境名称（可选，默认 env-N）"},
+                    "cwd": {"type": "string", "description": "工作目录（相对路径，默认工作区根）"},
+                    "env_vars": {"type": "object", "description": "环境变量对象 {KEY: VALUE}"},
+                }, []),
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "term_list",
+                "description": "列出所有持久命令行环境（含 id、名称、工作目录、最后使用的命令与退出码）。",
+                "parameters": _p({}),
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "term_delete",
+                "description": "删除一个持久命令行环境（仅销毁上下文，不影响已结束的进程）。",
+                "parameters": _p({
+                    "id": {"type": "string", "description": "要删除的环境 id"},
+                }, ["id"]),
             },
         },
         ])
@@ -3132,6 +3355,35 @@ def build_tool_defs(cfg: Config, expert_mode: bool = False, allow_delegate: bool
                     "parameters": _p({"key": {"type": "string", "description": "要清除的键名（空=全部）"}}, []),
                 },
             })
+    # v8.18 Agent 长期记忆库（教训沉淀 + 检索注入）
+    if getattr(cfg, "ENABLE_AGENT_MEMORY", True):
+        defs.append({
+            "type": "function",
+            "function": {
+                "name": "memory_read",
+                "description": "检索长期记忆库中的历史教训/用户偏好/项目知识（跨会话沉淀）。执行硬件刷写、烧录、底层调试、重复性任务前先查，避开已知坑。",
+                "parameters": _p({
+                    "query": {"type": "string", "description": "检索关键词（空=返回高频教训）"},
+                    "limit": {"type": "integer", "description": "返回条数（默认 5，最多 10）"},
+                }, []),
+            },
+        })
+        if not readonly:
+            defs.append({
+                "type": "function",
+                "function": {
+                    "name": "memory_record",
+                    "description": "把本回合发现的教训/用户偏好写入长期记忆库（跨会话复用，算力漂移时随快照同步合体）。只记模式级错误与稳定偏好，不记一次性小事。",
+                    "parameters": _p({
+                        "kind": {"type": "string", "description": "fault（故障）/ lesson（教训）/ preference（用户偏好）/ knowledge（项目知识）"},
+                        "scope": {"type": "string", "description": "global（跨项目通用坑）/ local（仅本项目）"},
+                        "phenomenon": {"type": "string", "description": "错误现象或偏好内容（一句话）"},
+                        "root_cause": {"type": "string", "description": "可能的远因"},
+                        "solution": {"type": "string", "description": "下次的正确做法"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "检索标签（如 K210/超时）"},
+                    }, ["phenomenon"]),
+                },
+            })
     # v6.3 Checkpoint 查询（恢复由 GUI 右键菜单触发）
     if getattr(cfg, "ENABLE_CHECKPOINT", True):
         defs.append({
@@ -3263,6 +3515,10 @@ TOOL_MATCH = {
     "grep": ["搜索内容", "查找代码", "正则", "定位代码", "grep", "匹配行"],
     "glob": ["文件列表", "查找文件", "glob", "匹配文件", "目录遍历"],
     "run_command": ["命令", "执行", "运行", "构建", "测试", "安装", "启动", "command", "build", "test", "pip", "npm", "run"],
+    # v8.18 持久命令行环境
+    "term_create": ["创建环境", "新建终端环境", "持久环境", "env create"],
+    "term_list": ["环境列表", "列出环境", "查看环境", "env list"],
+    "term_delete": ["删除环境", "移除环境", "env delete"],
     "delete_file": ["删除", "移除", "delete", "remove"],
     "delegate_task": ["委派", "子任务", "并行子任务", "delegate"],
     "plan_and_execute": ["规划", "拆解", "复杂任务", "dag", "plan"],
@@ -3287,6 +3543,8 @@ TOOL_MATCH = {
     "notepad_read": ["读暂存", "读备忘", "notepad"],
     "notepad_list": ["暂存列表", "备忘录", "notepad"],
     "notepad_clear": ["清暂存", "清备忘"],
+    "memory_read": ["记忆", "教训", "历史错误", "之前错过", "上次错", "memory"],
+    "memory_record": ["记住这个", "记入记忆", "沉淀教训", "记住教训", "memory record"],
     "list_checkpoints": ["checkpoint", "历史改动", "恢复点", "改动历史"],
     "list_audits": ["审计", "审计日志", "回退记录", "删除记录", "恢复记录", "audit"],
     # v6.6 浏览器控制
@@ -3387,6 +3645,61 @@ def select_tools(cfg: Config, defs: list, todo_text: str, expert: bool = False) 
     return [d for d in defs if d["function"]["name"] in keep]
 
 
+# ---------------- v8.18 Agent 长期记忆库 ----------------
+async def tool_memory_read(args, ctx: ToolContext) -> dict:
+    """检索长期记忆库（历史教训/用户偏好/项目知识）。执行底层/重复任务前先查。"""
+    if not getattr(ctx.cfg, "ENABLE_AGENT_MEMORY", True):
+        return {"ok": False, "output": "长期记忆库未启用（ENABLE_AGENT_MEMORY）。"}
+    from . import memory as agent_memory
+    query = str(args.get("query") or "").strip()
+    limit = min(max(_safe_int(args.get("limit"), 5), 1), 10)
+    try:
+        entries = await asyncio.to_thread(agent_memory.query, query, limit)
+    except Exception as e:
+        return _format_error(e)
+    if not entries:
+        return {"ok": True, "output": "记忆库中暂无相关条目。"}
+    lines = ["[长期记忆检索结果]"]
+    for e in entries:
+        lines.append(
+            f"- [{e.get('scope','?')}/{e.get('kind','?')}] {str(e.get('phenomenon',''))[:150]}"
+            f" → 远因: {str(e.get('root_cause') or '')[:120]}"
+            f" → 对策: {str(e.get('solution') or '')[:120]}"
+            f"（命中 {e.get('count', 1)} 次）"
+        )
+    return {"ok": True, "output": "\n".join(lines), "meta": {"count": len(entries)}}
+
+
+async def tool_memory_record(args, ctx: ToolContext) -> dict:
+    """把本回合发现的教训/用户偏好写入长期记忆库（跨会话复用）。"""
+    block = _readonly_block("memory_record")
+    if block:
+        return block
+    if not getattr(ctx.cfg, "ENABLE_AGENT_MEMORY", True):
+        return {"ok": False, "output": "长期记忆库未启用（ENABLE_AGENT_MEMORY）。"}
+    from . import memory as agent_memory
+    phenomenon = str(args.get("phenomenon") or "").strip()
+    if not phenomenon:
+        return {"ok": False, "output": "phenomenon 不能为空（一句话描述错误现象或偏好）。"}
+    try:
+        entry = await asyncio.to_thread(
+            agent_memory.record,
+            str(args.get("kind") or "lesson"),
+            str(args.get("scope") or "local"),
+            phenomenon,
+            str(args.get("root_cause") or ""),
+            str(args.get("solution") or ""),
+            _as_str_list(args.get("tags"))[:5],
+            "agent",
+        )
+    except ValueError as e:
+        return {"ok": False, "output": str(e)}
+    except Exception as e:
+        return _format_error(e)
+    action = "更新已有条目" if entry.get("_merged") else "新增条目"
+    return {"ok": True, "output": f"已{action}（记忆库）：{str(entry.get('phenomenon', ''))[:120]}"}
+
+
 TOOL_HANDLERS = {
     "list_dir": tool_list_dir,
     "read_file": tool_read_file,
@@ -3396,6 +3709,10 @@ TOOL_HANDLERS = {
     "grep": tool_grep,
     "glob": tool_glob,
     "run_command": tool_run_command,
+    # v8.18 持久命令行环境
+    "term_create": tool_term_create,
+    "term_list": tool_term_list,
+    "term_delete": tool_term_delete,
     "workspace_info": tool_workspace_info,
     "search_vault": tool_search_vault,
     "store_asset": tool_store_asset,
@@ -3425,6 +3742,9 @@ TOOL_HANDLERS = {
     "notepad_read": tool_notepad_read,
     "notepad_list": tool_notepad_list,
     "notepad_clear": tool_notepad_clear,
+    # v8.18 Agent 长期记忆库
+    "memory_read": tool_memory_read,
+    "memory_record": tool_memory_record,
     "list_checkpoints": tool_list_checkpoints,
     "list_audits": tool_list_audits,
     # ---- v6.6 浏览器控制（外交型）
@@ -3555,6 +3875,10 @@ async def _request_diff_approval(ctx: ToolContext, rel: str, old: str, new: str)
     # v8.13：超大 diff 不再直接放行——跳过预览后改走审批门（dangerous 标记，danger 模式也弹窗），
     # 避免 LLM 制造大 diff 绕过写前确认
     if max(len(old.splitlines()), len(new.splitlines())) > 2000:
+        # v8.17：无审批门环境（测试/无UI）保持与 diff≤2000 路径一致——直接放行；
+        # 有审批门时走审批（dangerous 标记，danger 模式也弹窗）
+        if ctx.approval is None or ctx.emit is None:
+            return True
         return await _request_approval(
             ctx, "write_file",
             {"command": f"写入 {rel}（差异超过 2000 行，跳过差异预览）",

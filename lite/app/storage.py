@@ -26,8 +26,10 @@ def save_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(path)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -38,8 +40,10 @@ def save_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(path)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)

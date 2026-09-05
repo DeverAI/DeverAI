@@ -189,12 +189,34 @@ function onCmdOutput(ev) {
 /* ---------- 审批卡片 ---------- */
 function onApproval(ev) {
   const container = Chat.currentAI ? Chat.currentAI.toolsWrap : $('#chat-messages');
+  const p = ev.payload || {};
   const ac = el('div', 'approval-card');
-  ac.appendChild(el('div', 'approval-title', icon('lock', 14) + ' 需要确认命令执行'));
-  ac.appendChild(el('div', 'approval-cmd', esc((ev.payload && ev.payload.command) || '')));
+  if (p.type === 'outbound') {
+    // v8.22 出关审核：需求复述 + 内容预览，批准后出关
+    ac.appendChild(el('div', 'approval-title', icon('shield', 14) + ' 出关审核（内容外发确认）'));
+    const reqBox = el('div', 'approval-cmd');
+    reqBox.style.whiteSpace = 'pre-wrap';
+    reqBox.textContent = '【用户原始要求复述】\n' + (p.requirement || '');
+    ac.appendChild(reqBox);
+    const cBox = el('div', 'approval-cmd');
+    cBox.style.whiteSpace = 'pre-wrap';
+    cBox.style.maxHeight = '240px';
+    cBox.style.overflowY = 'auto';
+    cBox.textContent = '【出关内容 → ' + (p.target || 'clipboard') + '】\n' + (p.content || '');
+    ac.appendChild(cBox);
+    if (p.title) ac.appendChild(el('div', 'approval-cmd', '标题: ' + p.title));
+  } else if (p.type === 'api_call') {
+    // v8.22 外部 API 授权卡片
+    ac.appendChild(el('div', 'approval-title', icon('globe', 14) + ' 外部 API 调用授权'));
+    ac.appendChild(el('div', 'approval-cmd', `API: ${p.api_name || ''} ${(p.api_desc || '') ? '（' + p.api_desc + '）' : ''}\n${p.method || 'GET'} ${p.base_url || ''}${p.path || ''}`));
+    if (p.body_preview) ac.appendChild(el('div', 'approval-cmd', '请求体: ' + p.body_preview));
+  } else {
+    ac.appendChild(el('div', 'approval-title', icon('lock', 14) + ' 需要确认命令执行'));
+    ac.appendChild(el('div', 'approval-cmd', esc((ev.payload && ev.payload.command) || '')));
+  }
   const actions = el('div', 'approval-actions');
-  const allow = el('button', 'btn primary', '允许执行');
-  const deny = el('button', 'btn danger', '拒绝');
+  const allow = el('button', 'btn primary', p.type === 'outbound' ? '审核通过，出关' : '允许执行');
+  const deny = el('button', 'btn danger', p.type === 'outbound' ? '驳回' : '拒绝');
   allow.onclick = () => { Approval.respond(true); ac.remove(); };
   deny.onclick = () => { Approval.respond(false); ac.remove(); };
   actions.appendChild(allow);

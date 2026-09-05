@@ -267,6 +267,14 @@ const ICONS = {
 <path d="M8 14H8.01" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M8 17H8.01" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`,
+  "coffee": `<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M17 8H6V14C6 16.2091 7.79086 18 10 18H14C16.2091 18 18 16.2091 18 14V8H17Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M18 9H20C21.1046 9 22 9.89543 22 11C22 12.1046 21.1046 13 20 13H18" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M8 4V2M12 4V2M16 4V2" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`,
+  "pin": `<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M9 4H15M9.5 4L9 9L5 13V14H19V13L15 9L14.5 4M12 14V21" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`,
   "mcp-server": `<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
 <path d="M5 12.55C5.91 12.21 6.91 12 8 12C11.87 12 15 15.13 15 19C15 19.34 14.97 19.67 14.92 20" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M12.73 5.07996C13.3746 4.83637 14.062 4.71054 14.755 4.70898C17.524 4.70898 19.765 6.94997 19.765 9.71897C19.765 12.488 17.524 14.729 14.755 14.729" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -351,6 +359,15 @@ const ICONS = {
 <path d="M18 3C18.5523 3 19 3.44772 19 4V20C19 20.5523 18.5523 21 18 21C17.4477 21 17 20.5523 17 20V4C17 3.44772 17.4477 3 18 3Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M6 8L10 12L6 16" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 <path d="M14 21H14.01" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`,
+  "globe": `<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<circle cx="12" cy="12" r="10" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M2 12H22" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 2C14.5013 4.73835 15.9228 8.29217 16 12C15.9228 15.7078 14.5013 19.2617 12 22C9.49872 19.2617 8.07725 15.7078 8 12C8.07725 8.29217 9.49872 4.73835 12 2Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`,
+  "brain": `<svg width="800px" height="800px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M9.5 2C7.01472 2 5 4.01472 5 6.5V7C3.34315 7 2 8.34315 2 10C2 11.6569 3.34315 13 5 13V17.5C5 19.9853 7.01472 22 9.5 22C11.9853 22 14 19.9853 14 17.5V6.5C14 4.01472 11.9853 2 9.5 2Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M14.5 2C16.9853 2 19 4.01472 19 6.5V7C20.6569 7 22 8.34315 22 10C22 11.6569 20.6569 13 19 13V17.5C19 19.9853 16.9853 22 14.5 22C13.8547 22 13.2443 21.8626 12.6942 21.6162C13.5274 20.5515 14 19.0797 14 17.5V6.5C14 5.01491 13.4532 3.52193 12.4753 2.48343C13.0987 2.16836 13.7828 2 14.5 2Z" stroke="#000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`
 };
 

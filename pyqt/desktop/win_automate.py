@@ -138,18 +138,82 @@ def bring_to_front(hwnd: int) -> dict:
         return {"ok": False, "output": f"置前失败: {e}"}
 
 
+def _grab_win32(hwnd: int, path: str) -> bool:
+    """纯 Win32 截图（GDI PrintWindow → QImage 保存；无需 Qt 应用实例）。
+
+    v8.23：网页版/服务器场景无 QApplication，app_shot._grab 直接返回 False。
+    QImage 不依赖应用实例即可构造/保存，PrintWindow(…, PW_RENDERFULLCONTENT)
+    可捕获 DirectComposition 内容（Chrome/Win11 应用），后台窗口也可截。
+    """
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(int(hwnd), ctypes.byref(rect)):
+        return False
+    w = int(rect.right - rect.left)
+    h = int(rect.bottom - rect.top)
+    if w <= 0 or h <= 0 or w > 20000 or h > 20000:
+        return False
+    hdc = user32.GetWindowDC(int(hwnd))
+    if not hdc:
+        return False
+    memdc = gdi32.CreateCompatibleDC(hdc)
+    bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
+    try:
+        gdi32.SelectObject(memdc, bmp)
+        # 2 = PW_RENDERFULLCONTENT
+        if not user32.PrintWindow(int(hwnd), memdc, 2):
+            return False
+
+        class _BMI(ctypes.Structure):
+            _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+                        ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+                        ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                        ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                        ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                        ("biClrImportant", wintypes.DWORD)]
+
+        bmi = _BMI()
+        bmi.biSize = ctypes.sizeof(_BMI)
+        bmi.biWidth = w
+        bmi.biHeight = -h  # 自上而下
+        bmi.biPlanes = 1
+        bmi.biBitCount = 32
+        bmi.biCompression = 0  # BI_RGB
+        buf = ctypes.create_string_buffer(w * h * 4)
+        rows = gdi32.GetDIBits(memdc, bmp, 0, h, buf, ctypes.byref(bmi), 0)
+        if not rows:
+            return False
+        from PyQt6.QtGui import QImage
+        img = QImage(buf, w, h, w * 4, QImage.Format.Format_ARGB32)
+        if img.isNull():
+            return False
+        return img.save(str(path), "PNG")
+    finally:
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(memdc)
+        user32.ReleaseDC(int(hwnd), hdc)
+
+
 def screenshot_window(hwnd: int, path: str) -> dict:
-    """截图指定窗口保存到本地（复用 app_shot 主线程 QScreen 抓取，跨线程安全）。"""
+    """截图指定窗口保存到本地（优先 app_shot 主线程抓取；无 Qt 时 Win32 回退）。"""
     if not _is_available():
         return {"ok": False, "output": "仅支持 Windows。"}
     if not int(hwnd):
         return {"ok": False, "output": "无效窗口句柄。"}
+    grabbed = False
     try:
         from . import app_shot as _as
-        if not _as._grab(int(hwnd), str(path)):
-            return {"ok": False, "output": "截图失败（可能无 Qt 主线程或窗口不可见）。"}
-    except Exception as e:
-        return {"ok": False, "output": f"截图失败: {e}"}
+        grabbed = _as._grab(int(hwnd), str(path))
+    except Exception:
+        grabbed = False
+    if not grabbed:
+        try:
+            grabbed = _grab_win32(int(hwnd), str(path))
+        except Exception:
+            grabbed = False
+    if not grabbed:
+        return {"ok": False, "output": "截图失败（窗口可能不可见）。"}
     p = Path(path)
     if not p.is_file() or p.stat().st_size == 0:
         return {"ok": False, "output": "截图失败：未生成有效文件。"}

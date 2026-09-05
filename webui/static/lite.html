@@ -47,6 +47,15 @@ body{font-family:var(--font);background:var(--bg);color:var(--fg);height:100vh;o
 #chat-head .sub{font-size:11px;color:var(--fg2)}
 #chat-head button{background:none;border:none;color:var(--fg2);cursor:pointer;font-size:13px;padding:2px 6px}
 #messages{flex:1;overflow-y:auto;padding:8px 12px}
+/* ---- v8.16 多会话标签条 ---- */
+#session-tabs{display:flex;gap:6px;padding:6px 10px 0;overflow-x:auto;flex-shrink:0;border-bottom:1px solid var(--border)}
+.ses-tab{display:inline-flex;align-items:center;gap:6px;max-width:150px;padding:3px 8px 3px 10px;font-size:12px;border-radius:4px 4px 0 0;background:var(--bg2);color:var(--fg2);cursor:pointer;white-space:nowrap;flex-shrink:0;border:1px solid transparent}
+.ses-tab:hover{background:var(--bg3);color:var(--fg)}
+.ses-tab.active{background:var(--bg);color:var(--fg);border-color:var(--border);border-bottom-color:var(--bg)}
+.ses-x{width:14px;height:14px;line-height:12px;text-align:center;border-radius:3px;font-size:12px;color:var(--fg2)}
+.ses-x:hover{background:rgba(220,38,38,.15);color:var(--err)}
+.ses-new{width:22px;height:22px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;background:none;border:1px dashed var(--border);border-radius:4px;color:var(--fg2);font-size:13px;padding:0;cursor:pointer}
+.ses-new:hover{color:var(--accent);border-color:var(--accent)}
 .msg{margin-bottom:10px;max-width:100%}
 .msg .role{font-size:11px;color:var(--fg2);margin-bottom:2px}
 .msg .bubble{padding:8px 10px;border-radius:var(--radius);font-size:13px;word-wrap:break-word;white-space:pre-wrap}
@@ -114,8 +123,23 @@ body{font-family:var(--font);background:var(--bg);color:var(--fg);height:100vh;o
         <div class="title">AI 助手</div>
         <div class="sub" id="chat-sub">就绪</div>
       </div>
-      <button id="btn-clear">清空</button>
+      <div>
+        <button id="btn-security" title="安全审计">🛡</button>
+        <button id="btn-clear">清空</button>
+      </div>
     </div>
+    <div id="security-overlay" class="hidden" style="position:absolute;top:0;left:0;right:0;bottom:0;background:var(--bg);z-index:100;display:flex;flex-direction:column;padding:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="font-weight:600;">安全审计日志</span>
+        <button id="btn-sec-close" style="background:none;border:none;color:var(--fg2);cursor:pointer;font-size:16px;">✕</button>
+      </div>
+      <textarea id="sec-log" readonly style="flex:1;width:100%;font-size:11px;font-family:monospace;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;resize:none;" placeholder="加载中..."></textarea>
+      <div style="display:flex;gap:6px;margin-top:6px;">
+        <button id="btn-sec-refresh" style="font-size:12px;">刷新</button>
+        <button id="btn-sec-clear" style="font-size:12px;color:var(--err);">清空</button>
+      </div>
+    </div>
+    <div id="session-tabs" class="hidden"></div>
     <div id="messages"></div>
     <div id="chat-input-area">
       <textarea id="chat-input" placeholder="输入消息... (Ctrl+Enter 发送)"></textarea>
@@ -176,7 +200,7 @@ const State = {
   abortCtrl: null,
   currentFile: null,
   ws: { authorized: false, name: '' },
-  cfg: { base_url:'', api_key:'', model:'' },
+  cfg: { base_url:'', api_key:'', model:'', ENABLE_MULTI_SESSION:true },
   serverInfo: null,
 };
 
@@ -204,6 +228,20 @@ function toast(msg, type='info') {
   el.textContent = msg;
   $('#toast-root').appendChild(el);
   setTimeout(()=>{ el.style.opacity='0'; setTimeout(()=>el.remove(),300); }, 2500);
+}
+
+/* ---- v8.17 安全审计弹窗 ---- */
+function loadSecurityLog() {
+  const box = $('#sec-log');
+  if (!box) return;
+  box.value = '加载中...';
+  api('/api/security/audit').then(r => {
+    const entries = (r.entries || []).reverse();
+    if (!entries.length) { box.value = '暂无审计记录'; return; }
+    box.value = entries.map(e =>
+      `[${e.ts||''}] ${e.action||''} ${e.user||''} ${e.ip||''} ${e.detail||''}`
+    ).join('\n');
+  }).catch(() => { box.value = '加载失败'; });
 }
 
 /* ---- SSE ---- */
@@ -317,6 +355,7 @@ async function enterApp() {
   if (State.ws.authorized) loadTree('');
   wireUI();
   restoreHistory();
+  renderSessionTabs();   // v8.16：会话标签条（cfg 开关关闭时自隐藏）
 }
 
 async function refreshWs() {
@@ -446,6 +485,19 @@ function wireUI() {
     saveHistory();
     $('#messages').innerHTML = '';
   };
+  // v8.17 安全审计弹窗
+  $('#btn-security').onclick = () => {
+    $('#security-overlay').classList.remove('hidden');
+    loadSecurityLog();
+  };
+  $('#btn-sec-close').onclick = () => { $('#security-overlay').classList.add('hidden'); };
+  $('#btn-sec-refresh').onclick = loadSecurityLog;
+  $('#btn-sec-clear').onclick = () => {
+    if (!confirm('确定清空审计日志？')) return;
+    api('/api/security/audit/clear', { method: 'POST' }).then(() => {
+      toast('审计日志已清空'); loadSecurityLog();
+    }).catch(() => toast('清空失败', 'err'));
+  };
   $('#chat-input').addEventListener('keydown', e => {
     if (e.key==='Enter' && (e.ctrlKey||e.metaKey)) { e.preventDefault(); sendMessage(); }
   });
@@ -472,18 +524,147 @@ function addMsg(role, content) {
 }
 
 function restoreHistory() {
-  try {
-    const raw = sessionStorage.getItem('lite.history');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      State.history = Array.isArray(parsed) ? parsed : [];
-    }
-  } catch(e) { State.history = []; }
+  // v8.16：读活跃会话槽位并重建消息 DOM（多会话关闭时回落旧 sessionStorage 键）
+  loadActiveHistory();
   (State.history || []).forEach(m => { if (m && m.role && m.content != null) addMsg(m.role, m.content); });
 }
 
 function saveHistory() {
-  try { sessionStorage.setItem('lite.history', JSON.stringify(State.history.slice(-50))); } catch(e){}
+  try {
+    if (sessionEnabled()) {
+      const s = ensureSessions();
+      lsSet(slotKey(s.active), State.history.slice(-50));
+    } else {
+      sessionStorage.setItem('lite.history', JSON.stringify(State.history.slice(-50)));
+    }
+  } catch(e){}
+}
+
+/* ---- v8.16 多会话标签：localStorage 索引 + 分会话历史槽位 ----
+ * 旧 sessionStorage['lite.history'] 仅作为首启迁移源保留（不回写）。
+ * localStorage 持久化优于 sessionStorage：浏览器重启后会话仍可恢复。 */
+const SES_KEY = 'lite.chat.sessions';
+const HIST_PREFIX = 'lite.chat.hist.';
+function lsGet(k){ try { return JSON.parse(localStorage.getItem(k)); } catch(e){ return null; } }
+function lsSet(k,v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
+function sessionEnabled(){ return !State.cfg || State.cfg.ENABLE_MULTI_SESSION !== false; }
+function slotKey(id){ return HIST_PREFIX + String(id).replace(/[^a-zA-Z0-9_-]/g,''); }
+
+function ensureSessions() {
+  let s = lsGet(SES_KEY);
+  if (!s || !Array.isArray(s.items) || !s.items.length) {
+    const legacy = (()=>{ try { const p=JSON.parse(sessionStorage.getItem('lite.history')); return Array.isArray(p)?p:[]; } catch(e){ return []; }})();
+    s = { active:'default', items:[{ id:'default', name:'默认会话' }] };
+    if (legacy.length) lsSet(slotKey('default'), legacy.slice(-50));
+    lsSet(SES_KEY, s);
+  }
+  if (!s.items.some(x=>x.id===s.active)) s.active = s.items[0].id;
+  return s;
+}
+function saveSessions(s){ lsSet(SES_KEY, s); }
+
+function loadActiveHistory() {
+  if (!sessionEnabled()) {
+    State.history = [];
+    try { const p = JSON.parse(sessionStorage.getItem('lite.history')); if (Array.isArray(p)) State.history = p; } catch(e){}
+    return;
+  }
+  const s = ensureSessions();
+  const h = lsGet(slotKey(s.active));
+  State.history = Array.isArray(h) ? h : [];
+}
+
+function renderMessages() {
+  $('#messages').innerHTML = '';
+  (State.history||[]).forEach(m => { if (m && m.role && m.content != null) addMsg(m.role, m.content); });
+}
+
+function renderSessionTabs() {
+  const bar = $('#session-tabs');
+  if (!bar) return;
+  if (!sessionEnabled()) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  bar.innerHTML = '';
+  const s = ensureSessions();
+  s.items.forEach(it => {
+    const pill = document.createElement('div');
+    pill.className = 'ses-tab' + (it.id === s.active ? ' active' : '');
+    pill.title = it.name;
+    const label = document.createElement('span');
+    label.textContent = it.name;
+    label.onclick = () => switchSession(it.id);
+    label.ondblclick = (ev) => { ev.stopPropagation(); renameSession(it.id); };
+    const closeB = document.createElement('span');
+    closeB.className = 'ses-x'; closeB.textContent = '\u00d7'; closeB.title = '关闭该会话';
+    closeB.onclick = (ev) => { ev.stopPropagation(); closeSession(it.id); };
+    pill.appendChild(label);
+    pill.appendChild(closeB);
+    bar.appendChild(pill);
+  });
+  const plus = document.createElement('button');
+  plus.type = 'button'; plus.className = 'ses-new';
+  plus.textContent = '+'; plus.title = '新建会话（双击标签重命名）';
+  plus.onclick = newSession;
+  bar.appendChild(plus);
+}
+
+function switchSession(id) {
+  const s = ensureSessions();
+  if (!id || id === s.active) return;
+  if (State.busy) { toast('AI 回复中，请等待完成或停止','err'); return; }  // 运行中禁切（同桌面/网页版策略）
+  saveHistory();                       // 当前内容写回原槽位再切
+  s.active = id; saveSessions(s);
+  loadActiveHistory();
+  renderMessages();
+  renderSessionTabs();
+}
+
+function newSession() {
+  if (State.busy) { toast('AI 回复中，请先停止','err'); return; }
+  const s = ensureSessions();
+  const name = prompt('新会话名称（留空自动命名）：');
+  if (name === null) return;           // 用户取消
+  saveHistory();
+  const id = 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+  s.items.push({ id, name: (name.trim() || ('会话 ' + (s.items.length+1))).slice(0,30) });
+  s.active = id; saveSessions(s);
+  State.history = [];
+  renderMessages();
+  renderSessionTabs();
+}
+
+function renameSession(id) {
+  const s = ensureSessions();
+  const it = s.items.find(x => x.id === id);
+  if (!it) return;
+  const name = prompt('重命名会话：', it.name);
+  if (name === null) return;
+  it.name = (name.trim() || it.name).slice(0,30);
+  saveSessions(s);
+  renderSessionTabs();
+}
+
+function closeSession(id) {
+  const s = ensureSessions();
+  if (s.items.length <= 1) {           // 最后一个不可移除——清空内容保留会话
+    State.history = []; saveHistory(); renderMessages();
+    toast('最后一个会话已清空内容（会话保留）');
+    renderSessionTabs();
+    return;
+  }
+  const idx = s.items.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  const closingActive = s.active === id;
+  if (closingActive && State.busy) { toast('AI 回复中，请等待完成或停止','err'); return; }
+  s.items.splice(idx, 1);
+  if (closingActive) {
+    const nxt = s.items[Math.min(idx, s.items.length-1)];
+    s.active = nxt.id;
+    loadActiveHistory();
+  }
+  saveSessions(s);
+  renderMessages();
+  renderSessionTabs();
 }
 
 /* ---- Agent 核心 ---- */
@@ -525,6 +706,7 @@ async function executeTool(name, args) {
         const r = await api('/api/bridge/fs/read?path='+encodeURIComponent(args.path));
         const content = r.content||'';
         const oldS = String(args.old_string||'');
+        if (!oldS) return { ok:false, output:'old_string 不能为空（空串会匹配文件头导致误插入）' };
         if (!content.includes(oldS)) return { ok:false, output:'未找到要替换的文本' };
         const newContent = content.replace(oldS, String(args.new_string||''));
         await api('/api/bridge/fs/write', { method:'POST', body:{ path:args.path, content:newContent }});
@@ -543,7 +725,7 @@ async function executeTool(name, args) {
       case 'run_command': {
         // v8.11 检修：本地预判清单与后端 is_dangerous_cmd 同源；即使本地漏判，
         // 后端 403「危险命令」时会二次确认后带 danger_ok 重试，不会被永久卡死。
-        const DANGER_RE = /\brm\s+-[a-z]*[rf]|\bdel\s+\/[sfqi]|\brmdir\s+\/s|\brd\s+\/s\b|\bformat\b|\bdiskpart\b|\bmkfs\b|\bdd\s+if=|:\(\)\{|\breg\s+delete\b|\bshutdown\b|\breboot\b|\bpowershell\s+-enc|Invoke-Expression|\btaskkill\b(?=[\s\S]*\s\/f(?=\s|$))(?=[\s\S]*\s\/(?:im|pid)\b)|>\s*\/dev\/|\bgit\s+push\s+[\s\S]*--force(?!-with-lease)|\bdrop\s+(table|database)|\btruncate\s+table|\bpython(?:3)?\s+-c\b|\bpy\s+-c\b|\bpowershell\s+(?:-[a-z]+\s+)*-(?:command|enc)\b|\bcmd(?:\.exe)?\s+\/[cq]\b|\bRemove-Item\b[\s\S]*-Recurse\b|\bshutil\.rmtree\b|\bos\.remove\b/i;
+        const DANGER_RE = /\brm\s+-[a-z]*[rf]|\bdel\s+\/[sfqi]|\brmdir\s+\/s|\brd\s+\/s\b|\bformat\b|\bdiskpart\b|\bmkfs\b|\bdd\s+if=|:\(\)\{|\breg\s+delete\b|\bshutdown\b|\breboot\b|\bpowershell\s+-enc|Invoke-Expression|\btaskkill\b(?=[\s\S]*\s\/f(?=\s|$))(?=[\s\S]*\s\/(?:im|pid)\b)|>\s*\/dev\/|\bgit\s+push\s+[\s\S]*--force(?!-with-lease)|\bdrop\s+(table|database)|\btruncate\s+table|\bpython(?:3)?\s+-c\b|\bpy\s+-c\b|\bpowershell\s+(?:-[a-z]+\s+)*-(?:command|enc)\b|\bcmd(?:\.exe)?\s+\/[cq]\b|\bRemove-Item\b[\s\S]*-Recurse\b|\bshutil\.rmtree\b|\bos\.remove\b|\b(?:Remove-Item|ri|rm|del|erase|rmdir|rd)\b[^|\n;&]*\s-(?:recurse|r|rf|fr)\b|\bgit\s+clean\b[^|\n;&]*\s-[a-z]*f/i;
         const lines = [];
         let lastError = '';
         const exec = async (dangerOk) => {
@@ -605,6 +787,16 @@ async function sendMessage() {
   $('#chat-sub').textContent = '思考中...';
 
   State.history.push({ role:'user', content:text });
+  // v8.16：空白名会话首条消息 → 自动命名并刷新标签
+  if (sessionEnabled()) {
+    const s = ensureSessions();
+    const cur = s.items.find(x => x.id === s.active);
+    if (cur && State.history.length === 1 && /^(默认会话|新会话|会话 \d+)$/.test(cur.name)) {
+      cur.name = text.slice(0, 18);
+      saveSessions(s);
+      renderSessionTabs();
+    }
+  }
   saveHistory();
   addMsg('user', text);
   $('#chat-input').value = '';
@@ -685,12 +877,9 @@ async function sendMessage() {
   }
 }
 
-// 停止按钮（send-btn 在 busy 时充当停止）
-$('#send-btn') && document.addEventListener('click', e => {
-  if (e.target && e.target.id === 'send-btn' && State.busy) {
-    if (State.abortCtrl) { try { State.abortCtrl.abort(); } catch(e){} }
-  }
-});
+// 停止按钮逻辑已内联到 sendMessage（onclick）中——
+// 不要在 document 级再加 click 监听器，否则 onclick 设 State.busy=true 后冒泡到 document，
+// 被此监听器立即 abort，导致每条消息发送即自毙（v8.17 修复）
 
 // 启动
 boot();

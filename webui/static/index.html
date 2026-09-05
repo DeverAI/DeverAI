@@ -6,7 +6,7 @@
 <title>DeverAI</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github.min.css" integrity="sha384-eFTL69TLRZTkNfYZOLM+G04821K1qZao/4QLJbet1pP4tcF+fdXq/9CdqAbWRl/L" crossorigin="anonymous" />
 <link rel="stylesheet" id="hljs-dark" disabled href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css" integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH" crossorigin="anonymous" />
-<link rel="stylesheet" href="/static/css/style.css?v=8.13.0" />
+<link rel="stylesheet" href="/static/css/style.css?v=8.25.0" />
 </head>
 <body>
 
@@ -48,9 +48,10 @@
 <div id="app" class="hidden">
 
   <!-- 左侧导航 -->
-  <aside id="left-nav">
+  <aside id="left-nav" role="navigation" aria-label="工作区导航">
     <div class="ln-header">
       <button class="btn primary" id="btn-new-task"><span data-icon="plus" data-size="14"></span> New Task</button>
+      <button class="ln-pin" id="btn-nav-pin" title="固定展开/收起（Peek 模式）" aria-label="切换左栏固定" aria-pressed="false" data-icon="pin" data-size="14"></button>
     </div>
 
     <div class="ln-scroll">
@@ -77,30 +78,30 @@
       <section class="ln-section">
         <div class="ln-title">Better Harness <span class="ln-badge">new</span></div>
         <div class="ln-list">
-          <div class="ln-item" id="nav-assets"><span data-icon="atom" data-size="14"></span> Assets</div>
-          <div class="ln-item" id="nav-experts"><span data-icon="bot" data-size="14"></span> Experts</div>
+          <div class="ln-item" id="nav-assets" role="button" tabindex="0"><span data-icon="atom" data-size="14"></span> Assets</div>
+          <div class="ln-item" id="nav-experts" role="button" tabindex="0"><span data-icon="bot" data-size="14"></span> Experts</div>
         </div>
       </section>
 
       <section class="ln-section">
         <div class="ln-title">Trace</div>
         <div class="ln-list">
-          <div class="ln-item" id="nav-trace"><span data-icon="chart" data-size="14"></span> 工作轨迹</div>
+          <div class="ln-item" id="nav-trace" role="button" tabindex="0"><span data-icon="chart" data-size="14"></span> 工作轨迹</div>
         </div>
       </section>
 
       <section class="ln-section">
         <div class="ln-title">Dev</div>
         <div class="ln-list">
-          <div class="ln-item" id="nav-devtools"><span data-icon="terminal" data-size="14"></span> API 控制台</div>
+          <div class="ln-item" id="nav-devtools" role="button" tabindex="0"><span data-icon="terminal" data-size="14"></span> API 控制台</div>
         </div>
       </section>
 
       <section class="ln-section">
         <div class="ln-title">Knowledge</div>
         <div class="ln-list">
-          <div class="ln-item" id="ln-doc-design"><span data-icon="memo" data-size="14"></span> Design.md</div>
-          <div class="ln-item" id="ln-doc-techniques"><span data-icon="memo" data-size="14"></span> Techniques.md</div>
+          <div class="ln-item" id="ln-doc-design" role="button" tabindex="0"><span data-icon="memo" data-size="14"></span> Design.md</div>
+          <div class="ln-item" id="ln-doc-techniques" role="button" tabindex="0"><span data-icon="memo" data-size="14"></span> Techniques.md</div>
         </div>
       </section>
     </div>
@@ -136,6 +137,8 @@
     </header>
 
     <div id="main-body">
+      <!-- v8.16 多会话标签条（ENABLE_MULTI_SESSION 关闭时由 sessions.js 隐藏） -->
+      <div id="session-tabs" class="hidden"></div>
       <!-- Hero 欢迎区 -->
       <div id="hero">
         <div class="hero-logo">D</div>
@@ -250,14 +253,16 @@
   </main>
 
   <!-- 右侧面板 -->
-  <aside id="right-panel">
+  <aside id="right-panel" role="complementary" aria-label="上下文面板">
     <header id="right-header">
       <div class="rh-tabs">
         <button class="rh-tab active" data-tab="summary">Summary</button>
         <button class="rh-tab" data-tab="terminal">Terminal</button>
         <button class="rh-tab" data-tab="files">Files</button>
+        <button class="rh-tab" data-tab="worktree" title="Git 分支实验（git worktree 多工作树并行检出）">分支实验</button>
       </div>
       <div class="rh-actions">
+        <button class="icon-btn" id="btn-right-pin" title="固定展开/收起（Peek 模式）" aria-label="切换右栏固定" aria-pressed="false" data-icon="pin" data-size="14"></button>
         <button class="icon-btn" id="btn-account" title="账户与项目" data-icon="user" data-size="14"></button>
         <button class="icon-btn" id="btn-settings" title="设置" data-icon="cog" data-size="14"></button>
       </div>
@@ -324,6 +329,23 @@
           <div id="editor-fallback" class="hidden"><textarea id="fallback-editor" spellcheck="false"></textarea></div>
         </div>
       </div>
+
+      <!-- v8.21 Git 分支实验（git worktree 列表/切换/新建/移除）。
+           v8.24 更名：与 Design「WorkTree 独立安全备份审核」（checkpoint/session_snap/dep_tree/audit）区分，
+           本面板只是 git worktree 多工作树实验入口。 -->
+      <div class="right-tab hidden" id="tab-worktree">
+        <div class="panel-head">
+          <span class="panel-title">Git 分支实验</span>
+          <div class="panel-actions">
+            <button class="icon-btn" id="btn-wt-refresh" title="刷新" data-icon="refresh" data-size="14"></button>
+            <button class="icon-btn" id="btn-wt-new" title="新建工作树" data-icon="plus" data-size="14"></button>
+          </div>
+        </div>
+        <div class="wt-hint" id="wt-hint">Git 分支实验：同仓库多工作树（git worktree）并行检出，切换 = 改当前工作区指向。与 WorkTree 安全备份审核机制无关。</div>
+        <div id="wt-list" class="wt-list">
+          <div class="empty-state">点击刷新加载工作树列表。</div>
+        </div>
+      </div>
     </div>
   </aside>
 </div>
@@ -384,19 +406,21 @@
 <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js" integrity="sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp" crossorigin="anonymous"></script>
 <script>window.MONACO_URL = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs';</script>
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js" integrity="sha384-SF/kPhqG3NMxqsYAbQqHkdF53WQx8yTkY0Ys+M+ayeC20QNujPyyxIuUEdEf0eG/" crossorigin="anonymous"></script>
-<script src="/static/js/core.js?v=8.13.0"></script>
-<script src="/static/js/icons.js?v=8.13.0"></script>
-<script src="/static/js/fs.js?v=8.13.0"></script>
-<script src="/static/js/editor.js?v=8.13.0"></script>
-<script src="/static/js/tree.js?v=8.13.0"></script>
-<script src="/static/js/tools.js?v=8.13.0"></script>
-<script src="/static/js/agent.js?v=8.13.0"></script>
-<script src="/static/js/chat.js?v=8.13.0"></script>
-<script src="/static/js/panels.js?v=8.13.0"></script>
-<script src="/static/js/trace.js?v=8.13.0"></script>
-<script src="/static/js/devtools.js?v=8.13.0"></script>
-<script src="/static/js/voice-pet.js?v=2.0.0"></script>
-<script src="/static/js/voice.js?v=2.0.0"></script>
-<script src="/static/js/main.js?v=8.13.0"></script>
+<script src="/static/js/core.js?v=8.25.0"></script>
+<script src="/static/js/icons.js?v=8.25.0"></script>
+<script src="/static/js/memory.js?v=8.25.0"></script>
+<script src="/static/js/fs.js?v=8.25.0"></script>
+<script src="/static/js/editor.js?v=8.25.0"></script>
+<script src="/static/js/tree.js?v=8.25.0"></script>
+<script src="/static/js/tools.js?v=8.25.0"></script>
+<script src="/static/js/agent.js?v=8.25.0"></script>
+<script src="/static/js/chat.js?v=8.25.0"></script>
+<script src="/static/js/panels.js?v=8.25.0"></script>
+<script src="/static/js/trace.js?v=8.25.0"></script>
+<script src="/static/js/devtools.js?v=8.25.0"></script>
+<script src="/static/js/voice-pet.js?v=8.25.0"></script>
+<script src="/static/js/voice.js?v=8.25.0"></script>
+<script src="/static/js/sessions.js?v=8.25.0"></script>
+<script src="/static/js/main.js?v=8.25.0"></script>
 </body>
 </html>

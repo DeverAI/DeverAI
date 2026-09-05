@@ -254,6 +254,9 @@ def launch(url: str, headed: bool = False, stealth: bool = False,
 def _do_launch(exe: str, url: str, mode: str, stealth: bool,
                window_width: int, window_height: int) -> dict:
     """执行实际的浏览器启动。"""
+    # v8.23 修复：缺 global 声明导致 _SESSION 只写入局部变量——启动"成功"后
+    # navigate/click/type 仍报"尚未启动浏览器"（桌面版与网页版同源中招）。
+    global _SESSION
     tmpdir = tempfile.TemporaryDirectory(prefix="deverai_ctl_")
     try:
         # v8.14：user-data-dir 指向本会话专属临时目录——此前写死共享路径

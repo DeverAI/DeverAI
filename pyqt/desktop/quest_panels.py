@@ -47,6 +47,8 @@ class QuestSidebar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("questsidebar")
+        # v8.15 检修：QWidget 子类的 QSS background 规则默认不生效（Qt 文档要求显式开启）
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMinimumWidth(220)
         self.setMaximumWidth(286)
 
@@ -240,6 +242,8 @@ class StatusRow(QWidget):
                  tip: str = "", parent=None):
         super().__init__(parent)
         self.setObjectName("statusrow")
+        # v8.15 检修：hover 背景规则需显式开启样式化背景才生效
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setToolTip(tip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._on_txt, self._off_txt = on_txt, off_txt
@@ -289,6 +293,8 @@ class ModelPickerPopup(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Popup)
         self.setObjectName("modelpopup")
+        # v8.15 检修：子类需显式开启才能绘制 QSS 背景/圆角边框
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedWidth(330)
         v = QVBoxLayout(self)
         v.setContentsMargins(6, 8, 6, 8)
@@ -364,6 +370,9 @@ class ModelPickerPopup(QWidget):
         self.listw.clear()
         for m in models:
             w = QWidget()
+            # v8.15：命名后置透明——通用 QWidget{background} 会把每行刷成窗口底色
+            # 实心条，完全遮住列表的 panel 底色与选中/悬停高亮
+            w.setObjectName("modelrow")
             h = QHBoxLayout(w)
             h.setContentsMargins(8, 4, 8, 4)
             h.setSpacing(6)
@@ -425,6 +434,8 @@ class GlobalSuggestPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("globalsuggest")
+        # v8.15 检修：子类需显式开启才能绘制 QSS 卡片背景/边框
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._items: list = []
         self._processed = 0
         self._total = 0
@@ -458,8 +469,10 @@ class GlobalSuggestPanel(QWidget):
         sep.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(sep)
 
-        # 内容区
+        # 内容区（v8.15：命名后置透明——通用 QWidget{background} 会把它刷成
+        # 窗口底色方块，盖住 #globalsuggest 卡片底与圆角）
         self.stack = QWidget()
+        self.stack.setObjectName("gs_stack")
         self.stack_lay = QVBoxLayout(self.stack)
         self.stack_lay.setContentsMargins(8, 8, 8, 8)
         self.stack_lay.setSpacing(6)
@@ -689,6 +702,8 @@ class GuardBanner(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("guardbanner")
+        # v8.15 检修：P0 报警横幅的红边框/警示底此前从未绘制过（子类不自动画 QSS 背景）
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         v = QVBoxLayout(self)
         v.setContentsMargins(10, 8, 10, 8)
         v.setSpacing(4)
@@ -779,7 +794,8 @@ class TaskManagerPanel(QWidget):
         l1.setExpanded(True)
         if not experts:
             QTreeWidgetItem(l1, ["L2 专家", "（暂无活跃专家）", ""])
-        self.tree.expandToDepth(1)
+        # v8.15 检修：删除 expandToDepth(1)——它会把 L2 专家及其 L3 工具全部展开，
+        # 与"默认展开 L1；其他折叠"的设计注释矛盾（l1.setExpanded 已满足需求）
 
 
 # ==========================================================================
@@ -951,15 +967,17 @@ class TraceTimeline(QWidget):
                     return
                 idx = info["idx"]
                 self._pending_click_idx = idx
-                try:
-                    self._pending_click_timer.stop()
-                except Exception:
-                    pass
-                from PyQt6.QtCore import QTimer
-                self._pending_click_timer = QTimer(self)
-                self._pending_click_timer.setSingleShot(True)
-                self._pending_click_timer.timeout.connect(self._commit_pending_click)
-                self._pending_click_timer.start(250)
+                # v8.15 检修：复用单个定时器——此前每次点击 new 一个并丢弃引用，
+                # 旧 QTimer 因 parent=self 被 C++ 侧保活，长会话高频点击持续累积
+                tm = getattr(self, "_pending_click_timer", None)
+                if tm is None:
+                    from PyQt6.QtCore import QTimer
+                    tm = QTimer(self)
+                    tm.setSingleShot(True)
+                    tm.timeout.connect(self._commit_pending_click)
+                    self._pending_click_timer = tm
+                tm.stop()
+                tm.start(250)
             else:
                 lo, hi = (t0, t1) if t0 < t1 else (t1, t0)
                 self._range = (lo, hi)
@@ -1148,6 +1166,12 @@ class TraceFlow(QWidget):
         for _i, _it in enumerate(self._all_items):
             _it["__idx"] = _i
         if not self._keyword_tokens and not self._role_filter and self._range_filter == (0.0, 0.0):
+            # v8.15 检修：先清掉 _rebuild 留下的"暂无轨迹"占位行（NoItemFlags），
+            # 否则增量追加后占位行永久残留列表顶部
+            if self.listw.count() == 1:
+                it0 = self.listw.item(0)
+                if it0 is not None and it0.flags() == Qt.ItemFlag.NoItemFlags:
+                    self.listw.takeItem(0)
             widget = self._build_card(item)
             li = QListWidgetItem()
             li.setSizeHint(widget.sizeHint())
@@ -1156,7 +1180,16 @@ class TraceFlow(QWidget):
             self.listw.setItemWidget(li, widget)
             self.listw.scrollToBottom()
         else:
-            self._rebuild()
+            # v8.15 检修：筛选态下流式事件逐条触发全量重建（最多 2000 卡片，O(n²)）
+            # ——合并到 150ms 单发定时器，与 TraceTimeline 时间线同策略
+            if getattr(self, "_rebuild_pending", False):
+                return
+            self._rebuild_pending = True
+            QTimer.singleShot(150, self._flush_rebuild)
+
+    def _flush_rebuild(self):
+        self._rebuild_pending = False
+        self._rebuild()
 
     def clear(self):
         self._all_items = []

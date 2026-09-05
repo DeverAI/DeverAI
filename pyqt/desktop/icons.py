@@ -77,6 +77,17 @@ def _recolor_svg(svg_text: str, color: str) -> QByteArray:
         r'stroke="(?!none\b|transparent\b)[^"]*"', f'stroke="{color}"', svg_text)
     svg_text = re.sub(
         r"stroke='(?!none\b|transparent\b)[^']*'", f"stroke='{color}'", svg_text)
+    # 深色模式反色修复：CSS 形式着色（<style> 块 / 内联 style，如 .cls-2 { fill: #353535 }）
+    # 属性正则覆盖不到这类写法，导致图标在深色主题下保持原始深色
+    svg_text = re.sub(
+        r"(fill|stroke)(\s*:\s*)(?!none\b|transparent\b|white\b)[^;}\"']+",
+        lambda m: f"{m.group(1)}{m.group(2)}{color}",
+        svg_text, flags=re.IGNORECASE)
+    # 兜底：整个文件无任何着色声明时，形状默认渲染为黑色；
+    # 在根节点注入主题色供继承（显式声明的元素不受影响）
+    if not re.search(r"\bfill\s*[:=]", svg_text, flags=re.IGNORECASE):
+        svg_text = re.sub(r"<svg\b", f'<svg fill="{color}"', svg_text, count=1,
+                          flags=re.IGNORECASE)
     return QByteArray(svg_text.encode("utf-8"))
 
 

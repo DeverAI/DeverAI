@@ -69,6 +69,11 @@ _PROTECTED_NAMES = {"pyqt", "webui", "lite", "data", "backups", "dev_log", "upda
 _PROTECTED_FILES = {"Err.log", "config.json"}
 _READ_PROTECTED_NAMES = {"data", "backups"}
 _READ_PROTECTED_FILES = {"Err.log", "config.json"}
+# v8.15 检修：Windows 文件系统大小写不敏感，目录改名 Data 后保护会静默失效——比较统一小写
+_PROTECTED_NAMES_LC = {n.lower() for n in _PROTECTED_NAMES}
+_PROTECTED_FILES_LC = {n.lower() for n in _PROTECTED_FILES}
+_READ_PROTECTED_NAMES_LC = {n.lower() for n in _READ_PROTECTED_NAMES}
+_READ_PROTECTED_FILES_LC = {n.lower() for n in _READ_PROTECTED_FILES}
 
 
 def _protected_parts(p: Path, root: Path):
@@ -91,7 +96,7 @@ def _is_protected(p: Path, root: Path) -> bool:
     if info is None:
         return False
     parts, name = info
-    return bool(parts and (parts[0] in _PROTECTED_NAMES or name in _PROTECTED_FILES))
+    return bool(parts and (parts[0].lower() in _PROTECTED_NAMES_LC or name.lower() in _PROTECTED_FILES_LC))
 
 
 def _is_read_protected(p: Path, root: Path) -> bool:
@@ -99,7 +104,7 @@ def _is_read_protected(p: Path, root: Path) -> bool:
     if info is None:
         return False
     parts, name = info
-    return bool(parts and (parts[0] in _READ_PROTECTED_NAMES or name in _READ_PROTECTED_FILES))
+    return bool(parts and (parts[0].lower() in _READ_PROTECTED_NAMES_LC or name.lower() in _READ_PROTECTED_FILES_LC))
 
 
 @app.on_event("startup")
@@ -162,6 +167,8 @@ async def register(body: _AuthBody, response: Response, request: Request):
     except ValueError as e:
         raise HTTPException(400, str(e))
     auth.set_session(response, body.username.strip(), cfg.secret, cfg.session_ttl_hours, request)
+    from .security import audit as _audit
+    _audit("register", user=body.username.strip(), ip=ip)
     return {"ok": True, "username": body.username.strip()}
 
 
@@ -181,6 +188,8 @@ async def login(body: _AuthBody, response: Response, request: Request):
         record_login_failure(ip, body.username)
         raise HTTPException(401, "用户名或密码错误")
     auth.set_session(response, u["username"], cfg.secret, cfg.session_ttl_hours, request)
+    from .security import audit as _audit
+    _audit("login", user=u["username"], ip=ip)
     return {"ok": True, "username": u["username"]}
 
 
@@ -469,7 +478,7 @@ async def llm_chat(request: Request, user: dict = Depends(auth.current_user)):
     async def _gen():
         client = None
         try:
-            client = httpx.AsyncClient(timeout=timeout)
+            client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
             async with client.stream("POST", target, json=payload, headers=headers) as resp:
                 if resp.status_code != 200:
                     raw = (await resp.aread()).decode("utf-8", errors="replace")[:600]
@@ -480,7 +489,15 @@ async def llm_chat(request: Request, user: dict = Depends(auth.current_user)):
                         if line:
                             yield line + "\n\n"
                 else:
-                    data = (await resp.aread()).decode("utf-8", errors="replace")
+                    # v8.15 检修：非流式响应设 32MB 上限（防误配端点超大 body 撑爆内存）
+                    chunks = []
+                    got = 0
+                    async for chunk in resp.aiter_bytes():
+                        chunks.append(chunk)
+                        got += len(chunk)
+                        if got >= 32 * 1024 * 1024:
+                            break
+                    data = b"".join(chunks).decode("utf-8", errors="replace")
                     yield f'data: {data}\n\n'
         except Exception as e:
             yield f'event: error\ndata: {json.dumps({"message": _sanitize(str(e))}, ensure_ascii=False)}\n\n'
@@ -711,7 +728,9 @@ async def fs_grep(pattern: str = "", path: str = "", glob: str = "",
                     break
         for f in files:
             try:
-                head = f.read_bytes()[:8192]
+                # v8.15 检修：只读前 8KB 探测二进制（read_bytes 会把数 GB 文件整读进内存）
+                with open(f, "rb") as bf:
+                    head = bf.read(8192)
                 if b"\x00" in head:
                     continue
                 with open(f, "r", encoding="utf-8", errors="replace") as fh:
@@ -770,31 +789,34 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
     except (TypeError, ValueError):
         timeout = 120
 
-    async def _kill_tree() -> None:
-        """v8.14：Windows 下 proc.kill() 只杀 shell 本体，孙进程（cmd /c start ...）残留；
-        改用 taskkill /T /F 杀整棵进程树，失败回退 proc.kill()。"""
-        if proc is None or proc.returncode is not None:
-            return
-        if os.name == "nt" and proc.pid:
-            try:
-                k = await asyncio.create_subprocess_exec(
-                    "taskkill", "/PID", str(proc.pid), "/T", "/F",
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW)
-                try:
-                    await asyncio.wait_for(k.wait(), timeout=10)
-                except asyncio.TimeoutError:
-                    pass
-            except BaseException:
-                pass  # v8.14b：含 CancelledError——清理路径必须走到末尾的同步兜底强杀
-        try:
-            if proc.returncode is None:
-                proc.kill()
-        except ProcessLookupError:
-            pass
-
     async def _gen():
         proc = None
+
+        async def _kill_tree() -> None:
+            """v8.14：Windows 下 proc.kill() 只杀 shell 本体，孙进程（cmd /c start ...）残留；
+            改用 taskkill /T /F 杀整棵进程树，失败回退 proc.kill()。
+            v8.15 检修：必须定义在 _gen 内——proc 是 _gen 的局部变量，
+            定义在外层会因闭包查不到而 NameError，清理从未真正生效过。"""
+            if proc is None or proc.returncode is not None:
+                return
+            if os.name == "nt" and proc.pid:
+                try:
+                    k = await asyncio.create_subprocess_exec(
+                        "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW)
+                    try:
+                        await asyncio.wait_for(k.wait(), timeout=10)
+                    except asyncio.TimeoutError:
+                        pass
+                except BaseException:
+                    pass  # v8.14b：含 CancelledError——清理路径必须走到末尾的同步兜底强杀
+            try:
+                if proc.returncode is None:
+                    proc.kill()
+            except ProcessLookupError:
+                pass
+
         try:
             creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             # v8.14：limit 提升到 1MB——StreamReader 默认 64KB 行上限会让
@@ -858,3 +880,17 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
                     pass
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+# v8.17 安全中心：审计日志读取与清空（与 webui/server.py 对称）
+@app.get("/api/security/audit")
+async def api_security_audit(user: dict = Depends(auth.current_user)):
+    from .security import read_audit
+    return {"entries": read_audit(200)}
+
+
+@app.post("/api/security/audit/clear")
+async def api_security_audit_clear(user: dict = Depends(auth.current_user)):
+    from .security import clear_audit
+    clear_audit()
+    return {"ok": True}

@@ -176,8 +176,22 @@ def build_qss(p: dict) -> str:
     return f"""
     QMainWindow, QDialog {{ background: {p['bg']}; color: {p['text']};
       font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 14px; }}
-    QWidget {{ color: {p['text']};
+    QWidget {{ background: {p['bg']}; color: {p['text']};
       font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 14px; }}
+    /* 通用背景命中后，纯文本标签保持透明以透出所在卡片的底色 */
+    QLabel {{ background: transparent; }}
+    /* 右栏 Pannel 宿主（标签条上方区域）与 Dock 标题同色 */
+    QDockWidget#questpaneldock > QWidget {{ background: {p['panel']}; }}
+    /* v8.16：多会话标签条 */
+    QWidget#sessionbarhost {{ background: transparent; }}
+    QTabBar#sessiontabs {{ background: transparent; }}
+    QTabBar#sessiontabs::tab {{ background: {p['panel']}; color: {p['muted']};
+      padding: 4px 12px; border: 1px solid {p['border']}; border-bottom: none;
+      border-top-left-radius: 6px; border-top-right-radius: 6px;
+      margin-right: 2px; max-width: 170px; }}
+    QTabBar#sessiontabs::tab:hover {{ color: {p['text']}; background: {p['hover']}; }}
+    QTabBar#sessiontabs::tab:selected {{ color: {p['text']};
+      border-bottom: 2px solid {p['accent']}; }}
     QDockWidget {{ color: {p['muted']}; }}
     QDockWidget::title {{ background: {p['panel']}; padding: 6px 12px; color: {p['muted']};
       border-bottom: 1px solid {p['border']}; }}
@@ -313,6 +327,11 @@ def build_qss(p: dict) -> str:
 
     /* ---- v8.5.6 全局建议面板（TRAE CUE-Pro 式）---- */
     QWidget#globalsuggest {{ background: {p['panel']}; border: 1px solid {p['border']}; border-radius: 10px; }}
+    /* v8.15：通用 QWidget{{background}} 会把裸容器刷成窗口底色方块——
+       卡片内容区/列表行/轨迹卡必须显式置透明，透出各自容器的底色与高亮 */
+    QWidget#gs_stack {{ background: transparent; }}
+    QWidget#modelrow {{ background: transparent; }}
+    QFrame#tracecard {{ background: transparent; }}
     QLabel#gs_title {{ color: {p['text']}; font-size: 13px; font-weight: 700; }}
     QPushButton#gs_menu {{ background: transparent; border: none; color: {p['muted']}; font-weight: 700; }}
     QPushButton#gs_menu:hover {{ color: {p['text']}; background: {p['hover']}; border-radius: 5px; }}

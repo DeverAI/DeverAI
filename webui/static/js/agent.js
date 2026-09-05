@@ -14,6 +14,26 @@ const Agent = {
   SUB_ROUNDS: 8,
 };
 
+// ---- v8.18 软暂停（悬浮助手接管时主循环安全停靠在工具边界） ----
+let _paused = false;
+let _pauseWaiters = [];
+function agentPauseMain() {
+  if (_paused) return;
+  _paused = true;
+  emit({ type: 'note', text: '主循环已暂停（悬浮助手接管），当前工具跑完即停靠。' });
+}
+function agentResumeMain() {
+  if (!_paused) return;
+  _paused = false;
+  const ws = _pauseWaiters.splice(0);
+  ws.forEach((w) => w());
+  emit({ type: 'note', text: '主循环已恢复。' });
+}
+async function agentWaitIfPaused() {
+  if (!_paused) return;
+  await new Promise((resolve) => _pauseWaiters.push(resolve));
+}
+
 function emit(ev) {
   if (App.onAgentEvent) App.onAgentEvent(ev);
 }
@@ -47,6 +67,27 @@ function buildSystemPrompt() {
     `- 命令桥: ${FS.bridge.authorized ? '已授权' : '未授权，执行命令前需要用户先在设置中授权'}`,
     // v8.13：FSS 模式下删除只受 ALLOW_AI_DELETE 控制；bridge 模式还需后端授权
     `- 允许 AI 删除文件: ${cfg.ALLOW_AI_DELETE && (FS.mode !== 'bridge' || FS.bridge.allowAiDelete) ? '是' : '否'}`,
+    // v8.21/v8.24：Git 分支实验——AI 可感知/切换 git worktree（注意：不是 WorkTree 安全备份审核机制）
+    '- Git 分支实验: 当前工作区支持 git worktree（同仓库多工作树）。可用 worktree_list 查看所有工作树，worktree_switch 切换（需用户审批）。',
+    // v8.22：记忆系统提示
+    ...(cfg.ENABLE_MEMORY !== false ? [
+      '- 记忆: 你有跨会话长期记忆。memory_save 保存事实/经验教训/用户偏好/技能要点（踩坑修复后必须沉淀为 lesson）；动手前用 memory_search 查相关经验；用 memory_list 回顾避免重复。',
+    ] : []),
+    // v8.22：出关审核提示（repeat 机制）
+    ...(cfg.ENABLE_OUTBOUND_GATE !== false ? [
+      '- 出关审核: 任何要向外传递的最终内容（交付物/对外说明/邮件正文/发布文本）禁止直接写在聊天回复里出关，必须先调 outbound_deliver：逐字复述用户原始要求（requirement）+ 给出完整内容（content），经用户审核批准后才出关。',
+    ] : []),
+    // v8.22：外部 API 清单
+    ...(ExtAPIs && ExtAPIs.list().length ? [
+      `- 外部 API: 用户授权了 API 清单 [${ExtAPIs.list().map((x) => x.name).join(', ')}]。调用用 api_request（首次需用户授权）。`,
+    ] : []),
+    // v8.23：浏览器直控与外部软件自动化
+    ...(cfg.ENABLE_BROWSER_CTL !== false && cfg.ENABLE_BROWSER !== false ? [
+      '- 浏览器直控: 需要真实点击/输入/跳转网页时用 browser_launch 启动受控浏览器（CDP），再 browser_click/browser_type/browser_navigate 操作，用完 browser_close。只读抓取用 browser_read。',
+    ] : []),
+    ...(cfg.ENABLE_EXE_AUTOMATE !== false ? [
+      '- 外部软件: 可操控本地 exe 软件（exe_launch 启动、exe_list_windows 枚举窗口、exe_screenshot 看界面、exe_click/exe_type/exe_press_keys 操作、exe_close 关闭）。操作真实桌面的动作需用户批准；操作前先截图看清界面再点，点击坐标按截图像素定位。',
+    ] : []),
     '',
     '【路径安全约束（必须遵守）】',
     '- 你只能看到工作区的大代号（如 ' + (FS.rootName || 'WORKSPACE-XXXX') + '），绝对路径由系统层翻译，你不可见。',
@@ -409,14 +450,25 @@ async function runSession(userText) {
   let messages = buildMessages();
   let rounds = 0;
   let usage = {};
+  // v8.22：长期记忆召回——按用户消息取相关记忆，注入 system 上下文
+  let memText = '';
+  if (cfg && cfg.ENABLE_MEMORY !== false && typeof Memory !== 'undefined') {
+    memText = await Memory.recall(userText);
+    if (memText) {
+      messages = [...messages, { role: 'system', content: memText }];
+      emit({ type: 'note', text: '已召回相关长期记忆注入上下文' });
+    }
+  }
   // v8.5 批次1：上下文守门（可选，失败回落）—— 在工具循环前裁剪过时历史
   if (cfg && cfg.ENABLE_CTX_EXPERT !== false && App.history.length > 6) {
     const g = await gateHistory(App.history.slice(0, -1), userText, App.abortCtrl ? App.abortCtrl.signal : null);
     if (g.banned && g.banned.length) {
       emit({ type: 'ctx_gate', stats: { kept: g.keep.length / 2, banned: g.banned.length }, banned: g.banned });
       // 重新构建 messages：system + 保留历史 + 当前用户消息
+      // v8.22 检修：守门重建不得丢失记忆召回注入（memText 需重新追加）
       messages = [{ role: 'system', content: buildSystemPrompt() },
                   ...g.keep, { role: 'user', content: userText }];
+      if (memText) messages = [...messages, { role: 'system', content: memText }];
     }
   }
   // v8.5 批次1：依赖树校验问题注入（追加 system 警告段）
@@ -439,6 +491,7 @@ async function runSession(userText) {
     }
     for (;;) {
       if (Agent.aborted) break;
+      await agentWaitIfPaused(); // v8.18：软暂停停靠点（每轮工具循环顶部）
       if (rounds >= Agent.MAX_ROUNDS) {
         emit({ type: 'note', text: `已达最大轮数(${Agent.MAX_ROUNDS})，中止工具循环` });
         break;
@@ -477,6 +530,7 @@ async function runSession(userText) {
       emit({ type: 'assistant_tool_calls', count: resp.tool_calls.length });
       for (const tc of resp.tool_calls) {
         if (Agent.aborted) break;
+        await agentWaitIfPaused(); // v8.18：软暂停停靠点（每个工具执行前）
         let args = {};
         try {
           args = JSON.parse(tc.function.arguments || '{}');
@@ -557,6 +611,107 @@ async function runSession(userText) {
     await saveHistory().catch(() => {});
     Agent.running = false;
     App.abortCtrl = null;
+  }
+}
+
+/* ---------- v8.18 悬浮助手 Agent 循环（独立上下文，不污染主历史） ---------- */
+async function runPetAgent(userText, opts) {
+  opts = opts || {};
+  const cfg = App.config || {};
+  const maxRounds = opts.maxRounds || 12;
+  const onEvent = opts.onEvent || function () {};
+  // 独立 abort 控制器——不影响主循环的 App.abortCtrl
+  const petCtrl = new AbortController();
+  if (opts.signal && opts.signal.addEventListener) {
+    opts.signal.addEventListener('abort', () => petCtrl.abort(), { once: true });
+  }
+  const systemPrompt = opts.systemPrompt
+    || '你是 DeverAI 悬浮助手，可独立调用工作区工具（命令执行/文件读写/资产检索/子Agent委派）。'
+    + ' 当前工作区上下文由调用者注入工具结果；默认单打独斗，需要时也可调用 delegate_task 委派专家。'
+    + ' 任务完成或需要用户决策时输出明确结论。';
+  const messages = [{ role: 'system', content: systemPrompt }];
+  // 注入调用者提供的历史（如悬浮助手多轮对话）
+  if (Array.isArray(opts.history)) {
+    for (const m of opts.history) {
+      if (m && (m.role === 'user' || m.role === 'assistant') && m.content) {
+        messages.push({ role: m.role, content: m.content });
+      }
+    }
+  }
+  messages.push({ role: 'user', content: userText });
+
+  let rounds = 0;
+  let lastText = '';
+  const usage = {};
+  try {
+    for (;;) {
+      if (petCtrl.signal.aborted) break;
+      if (rounds >= maxRounds) {
+        onEvent({ type: 'note', text: '已达最大轮数(' + maxRounds + ')，中止工具循环' });
+        break;
+      }
+      rounds++;
+      onEvent({ type: 'thinking', round: rounds });
+      messages = await compressMessages(messages);
+      const resp = await llmChat({
+        messages,
+        tools: selectToolsWeb(cfg, getToolDefs(), userText),
+        signal: petCtrl.signal,
+        onDelta: (text) => onEvent({ type: 'text_delta', content: text }),
+      });
+      if (resp.usage) {
+        for (const k of ['prompt_tokens', 'completion_tokens', 'total_tokens']) {
+          const v = Number(resp.usage[k]);
+          if (Number.isFinite(v)) usage[k] = (Number(usage[k]) || 0) + v;
+        }
+      }
+      const assistantMsg = { role: 'assistant', content: resp.content || '' };
+      if (resp.tool_calls && resp.tool_calls.length) assistantMsg.tool_calls = resp.tool_calls;
+      messages.push(assistantMsg);
+      lastText = resp.content || '';
+
+      if (!resp.tool_calls || !resp.tool_calls.length) break;
+
+      onEvent({ type: 'assistant_tool_calls', count: resp.tool_calls.length });
+      for (const tc of resp.tool_calls) {
+        if (petCtrl.signal.aborted) break;
+        await agentWaitIfPaused(); // 尊重软暂停
+        let args = {};
+        try { args = JSON.parse(tc.function.arguments || '{}'); }
+        catch (e) { args = { _parse_error: String(tc.function.arguments || '') }; }
+        const callId = tc.id || 'pet_' + uid();
+        onEvent({ type: 'tool_start', call_id: callId, name: tc.function.name, args });
+        const result = await executeTool(tc.function.name, args, {
+          config: cfg,
+          signal: petCtrl.signal,
+          emit: (type, payload) => onEvent(Object.assign({}, payload, { type, call_id: callId })),
+        });
+        onEvent({
+          type: 'tool_result', call_id: callId, name: tc.function.name,
+          ok: result.ok, output: result.output, meta: result.meta,
+        });
+        let toolContent = String(result.output || '');
+        if (toolContent.length > 20000) toolContent = toolContent.slice(0, 20000) + '\n…(输出过长，已截断)';
+        messages.push({ role: 'tool', tool_call_id: callId, content: toolContent });
+        if (!result.ok) {
+          messages.push({
+            role: 'system',
+            content: '工具 ' + tc.function.name + ' 执行失败。错误: ' + String(result.output).slice(0, 600) + '。请分析原因后修正重试，或改用其他方法。',
+          });
+        }
+      }
+      if (petCtrl.signal.aborted) break;
+    }
+    onEvent({ type: 'run_done', rounds, usage });
+    return { ok: true, text: lastText, messages, rounds, usage };
+  } catch (e) {
+    const isAbort = (e && e.name === 'AbortError') || petCtrl.signal.aborted;
+    if (isAbort) {
+      onEvent({ type: 'run_cancelled' });
+      return { ok: false, aborted: true, text: lastText, messages, rounds };
+    }
+    onEvent({ type: 'run_error', message: String((e && e.message) || e) });
+    return { ok: false, error: String((e && e.message) || e), text: lastText, messages, rounds };
   }
 }
 

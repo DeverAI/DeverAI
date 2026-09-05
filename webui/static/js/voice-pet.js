@@ -435,20 +435,8 @@
         loadProgress();
       });
     } else {
-      // 无匹配意图 → 反馈模式
-      feedbackMode(text).then(function (result) {
-        if (result && result.text) {
-          appendMessage("assistant", result.text);
-          apiPostConversation("assistant", result.text).catch(function () {});
-          if (App.config.ENABLE_VOICE_ASSISTANT && "speechSynthesis" in window) {
-            speak(result.text);
-          }
-        }
-        updateMood("happy");
-      }).catch(function (err) {
-        appendMessage("assistant", "抱歉，我无法处理这个请求。");
-        updateMood("sad");
-      });
+      // v8.18：无匹配意图 → 一次 LLM 调用自判模式（chat / agent_loop / system_expert）
+      decideAndProcess(text);
     }
   }
 
@@ -595,6 +583,164 @@
       "回答要求：简洁、自然、口语化，适合语音回复（不超过 3 句话）。\n" +
       "当前工作区文件操作通过工具完成，不要编造文件内容。\n" +
       "你可以：查询任务进度、添加任务、注入消息到主对话、执行任务。";
+  }
+
+  // ---- v8.18 模式判定 + 悬浮助手 Agent 循环 ----
+  var PET_AGENT_SYSTEM = "你是 DeverAI 悬浮助手，现在进入自主 Agent 循环。你可以调用工作区全部工具（命令执行/文件读写/资产检索/子Agent委派）完成任务。"
+    + " 当前工作区上下文由工具结果注入；默认单打独斗，需要时也可 delegate_task 委派专家。"
+    + " 任务完成或需要用户决策时输出明确结论。";
+  var SYSTEM_EXPERT_PROMPT = "你是 DeverAI 系统专家，拥有系统知识与设计上下文的完整访问权。"
+    + " 你可以读取工作区文档（Design.md/Techniques.md/Fact.md/FreqErr.md）来回答关于 DeverAI 架构、模块、开关、设计决策的问题。"
+    + " 回答要准确、引用具体文档章节；只读不写，不要修改任何文件；不确定的说不确定。";
+
+  function _petHistory() {
+    var h = [];
+    var conv = _conversations.slice(-12);
+    for (var i = 0; i < conv.length; i++) {
+      if (conv[i].role === "user" || conv[i].role === "assistant") {
+        h.push({ role: conv[i].role, content: conv[i].content });
+      }
+    }
+    return h;
+  }
+
+  function renderPetEvent(ev) {
+    if (!ev || !ev.type) return;
+    if (ev.type === "tool_start") {
+      appendMessage("assistant", "▶ " + (ev.name || "tool"));
+    } else if (ev.type === "tool_result") {
+      appendMessage("assistant", "✓ " + (ev.name || "tool") + (ev.ok ? "" : "（失败）"));
+    } else if (ev.type === "text_delta" && ev.content) {
+      appendMessage("assistant", ev.content);
+    } else if (ev.type === "run_done") {
+      appendMessage("assistant", "（Agent 循环结束，共 " + (ev.rounds || 0) + " 轮）");
+    } else if (ev.type === "run_cancelled") {
+      appendMessage("assistant", "（已停止）");
+    } else if (ev.type === "run_error") {
+      appendMessage("assistant", "（出错：" + (ev.message || "未知") + "）");
+    }
+  }
+
+  async function runPetLoop(text) {
+    // 暂停主循环（如果正在运行）——软暂停，当前工具跑完即停靠
+    var pausedMain = false;
+    if (typeof Agent !== "undefined" && Agent.running && typeof agentPauseMain === "function") {
+      agentPauseMain();
+      pausedMain = true;
+    }
+    updateMood("thinking");
+    appendMessage("assistant", "已进入 Agent 循环，正在自主执行…");
+    try {
+      var res = await runPetAgent(text, {
+        history: _petHistory(),
+        systemPrompt: PET_AGENT_SYSTEM,
+        maxRounds: 12,
+        onEvent: renderPetEvent,
+      });
+      if (res && res.text) {
+        appendMessage("assistant", res.text);
+        apiPostConversation("assistant", res.text).catch(function () {});
+      }
+    } catch (e) {
+      appendMessage("assistant", "Agent 循环异常: " + (e && e.message ? e.message : String(e)));
+    } finally {
+      if (pausedMain && typeof agentResumeMain === "function") agentResumeMain();
+      loadProgress();
+    }
+  }
+
+  async function runPetExpert(text) {
+    updateMood("thinking");
+    appendMessage("assistant", "正在咨询系统专家…");
+    try {
+      var res = await runPetAgent(text, {
+        history: _petHistory(),
+        systemPrompt: SYSTEM_EXPERT_PROMPT,
+        maxRounds: 6,
+        onEvent: renderPetEvent,
+      });
+      if (res && res.text) {
+        appendMessage("assistant", res.text);
+        apiPostConversation("assistant", res.text).catch(function () {});
+      } else {
+        appendMessage("assistant", "专家暂无回复。");
+      }
+    } catch (e) {
+      appendMessage("assistant", "专家调用失败: " + (e && e.message ? e.message : String(e)));
+    } finally {
+      loadProgress();
+    }
+  }
+
+  async function decideAndProcess(text) {
+    if (typeof llmChat !== "function") {
+      appendMessage("assistant", "LLM 客户端不可用");
+      updateMood("sad");
+      return;
+    }
+    updateMood("thinking");
+    try {
+      // 取任务摘要供 chat 模式直接回答
+      var prog = await apiGetJSON("/api/bridge/voice-pet/progress");
+      var summary = (prog && prog.summary) ? prog.summary : null;
+      var ctxLine = summary
+        ? ("当前任务摘要：共 " + summary.total + " 个，待办 " + summary.pending + "，完成 " + summary.done
+           + (summary.nextTask ? "；下一优先：" + summary.nextTask.title : "") + "。")
+        : "暂无任务摘要。";
+      var sysPrompt = "你是 DeverAI 悬浮助手「小龙」。用户发来一条消息，先判断该用哪种模式处理，再直接给出该模式的输出。\n"
+        + "三种模式：\n"
+        + "- chat：单轮跑腿。闲聊/简单查询/不需要工具。直接在 reply 中回答（可引用下方[任务摘要]）。\n"
+        + "- agent_loop：需要动手干活（刷固件、编译、调试、多步骤）。reply 简要告知打算做什么，然后进入 Agent 循环自主执行。\n"
+        + "- system_expert：问的是 DeverAI 系统本身的架构/设计/开关/模块。进入专家模式查阅 Design.md/Techniques.md 后回答。\n"
+        + "[任务摘要]\n" + ctxLine + "\n"
+        + "严格输出一行 JSON 作为第一行：{\"mode\":\"chat\"|\"agent_loop\"|\"system_expert\",\"reply\":\"...\"}\n"
+        + "chat 模式可追加自然语言回复；agent_loop/system_expert 的 reply 只是一句简短告知。";
+      var resp = await llmChat({
+        messages: [
+          { role: "system", content: sysPrompt },
+          { role: "user", content: text },
+        ],
+        stream: false,
+        temperature: 0.1,
+        max_tokens: 800,
+      });
+      var raw = resp.text || resp.content || "";
+      var parsed = null;
+      try {
+        var m = raw.match(/^\s*(\{[\s\S]*\})/);
+        if (m) parsed = JSON.parse(m[1]);
+      } catch (e) { parsed = null; }
+      if (!parsed || !parsed.mode) {
+        // 解析失败退化 chat
+        appendMessage("assistant", raw.trim() || "抱歉，我无法处理这个请求。");
+        apiPostConversation("assistant", raw.trim()).catch(function () {});
+        updateMood("happy");
+        loadProgress();
+        return;
+      }
+      if (parsed.mode === "agent_loop") {
+        if (parsed.reply) {
+          appendMessage("assistant", parsed.reply);
+          apiPostConversation("assistant", parsed.reply).catch(function () {});
+        }
+        await runPetLoop(text);
+        updateMood("happy");
+      } else if (parsed.mode === "system_expert") {
+        await runPetExpert(text);
+        updateMood("happy");
+      } else {
+        var reply = parsed.reply || raw.trim() || "抱歉，我无法处理这个请求。";
+        appendMessage("assistant", reply);
+        apiPostConversation("assistant", reply).catch(function () {});
+        if (App.config.ENABLE_VOICE_ASSISTANT && "speechSynthesis" in window) speak(reply);
+        updateMood("happy");
+        loadProgress();
+      }
+    } catch (e) {
+      appendMessage("assistant", "处理出错: " + (e && e.message ? e.message : String(e)));
+      updateMood("sad");
+      loadProgress();
+    }
   }
 
   // ── 注入主对话 ──

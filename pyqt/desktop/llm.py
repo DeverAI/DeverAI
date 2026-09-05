@@ -66,6 +66,7 @@ async def stream_chat(
         raise LLMError("未配置 API Key，请在设置中填写模型服务地址与密钥。")
     payload = _base_payload(cfg, messages, tools, tool_choice, temperature, max_tokens, stream=True)
     timeout = httpx.Timeout(600.0, connect=30.0)
+    _pending_usage: Optional[dict] = None
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", _url(cfg), json=payload, headers=_headers(cfg)) as resp:
@@ -92,6 +93,10 @@ async def stream_chat(
                         continue
                     choices = chunk.get("choices") or []
                     if not choices:
+                        # v8.15 检修：部分兼容厂商（智谱 GLM 流式末包）usage 随空 choices 下发，
+                        # 直接 continue 会丢 token 统计——缓存住，finish 事件兜底用
+                        if chunk.get("usage"):
+                            _pending_usage = chunk.get("usage")
                         continue
                     choice = choices[0]
                     delta = choice.get("delta") or {}
@@ -109,7 +114,8 @@ async def stream_chat(
                         }
                     fr = choice.get("finish_reason")
                     if fr:
-                        yield {"type": "done", "finish_reason": fr, "usage": chunk.get("usage")}
+                        yield {"type": "done", "finish_reason": fr,
+                               "usage": chunk.get("usage") or _pending_usage}
     except httpx.HTTPError as e:
         # 网络层异常统一转友好提示（原始 traceback 由调用方 log_error 写 Err.log）
         raise LLMError(

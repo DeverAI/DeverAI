@@ -1,0 +1,18 @@
+# DeverAI — 核心依赖（稳定版本）
+# 安装：pip install -r requirements.txt
+# 可选加密依赖：cryptography（快照加密/漂移加密需要）
+
+# 桌面版（PyQt6 主形态）
+PyQt6>=6.6,<7
+# 网页版 / Lite / 同步服务器（FastAPI 栈）
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+pydantic>=2.0
+starlette>=0.36
+anyio>=4.0
+# 可选：快照加密（Fernet / AES-GCM）
+cryptography>=42
+# 测试时额外需要（已随 Python312 环境验证）
+# pytest
+# httpx 同步客户端用于冒烟测试（已在 httpx 内）

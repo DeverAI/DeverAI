@@ -33,12 +33,15 @@ class Config:
     ENABLE_SYNC: bool = True
     ENABLE_MODES: bool = True
     ENABLE_ERR_MIRROR: bool = True
+    ENABLE_AGENT_MEMORY: bool = True    # v8.18: Agent 长期记忆库（教训沉淀+检索注入+漂移合体）
     ENABLE_APPROVAL: bool = True
     ALLOW_AI_DELETE: bool = False
     ENABLE_CTX_EXPERT: bool = True      # v4: 上下文守门专家
     ENABLE_TRAY: bool = True            # v4: 系统托盘
     minimize_to_tray: bool = False      # v4: 关闭时最小化到托盘
     ENABLE_STREAM_COMPLETE: bool = True  # v4: 逐行流式补全
+    # ---- 多会话标签（v8.16）----
+    ENABLE_MULTI_SESSION: bool = True    # v8.16: 聊天区顶部标签条（关闭=旧单会话行为）
 
     # ---- 专家团（v5）----
     ENABLE_EXPERTS: bool = True          # v5: 专家团模式
@@ -148,7 +151,7 @@ class Config:
     dashscope_api_key: str = ""             # DashScope API Key（通义万相图像/视频生成）
 
     # ---- 外观（v4）----
-    theme: str = "obsidian"             # obsidian | paper | beige | blue | custom
+    theme: str = "obsidian"             # obsidian | paper | sand | midnight | harness | custom
     win_min_w: int = 900                # 窗口宽窄/大小限制（0 = 不限制）
     win_min_h: int = 560
     win_max_w: int = 0

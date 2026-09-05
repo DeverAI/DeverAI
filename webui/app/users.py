@@ -175,7 +175,6 @@ def create_user_with_email(email: str, password: str, username: str = "") -> dic
         if any(u.get("email", "").lower() == email for u in users):
             raise ValueError("该邮箱已注册")
         if any(u["username"] == username for u in users):
-            # 同名则加随机后缀；截断保证总长仍 ≤32
             # v8.14：加后缀后循环复查，防极小概率后缀仍撞名产生重复账号
             for _ in range(8):
                 suffix = secrets.token_hex(2)

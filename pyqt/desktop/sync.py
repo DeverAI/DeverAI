@@ -66,7 +66,8 @@ def build_snapshot(history: list, vault=None, extra: dict = None, runtime: dict 
             for k, v in cfg.__dict__.items()
             if not k.startswith("_") and k not in (
                 "api_key", "sync_password", "sync_token",
-                "drift_api_key", "search_api_key", "dashscope_api_key")
+                "drift_api_key", "search_api_key", "dashscope_api_key",
+                "sync_server_url")
         },
         "history": history,
         "vault": (vault.list() if vault is not None else []),
@@ -274,7 +275,13 @@ async def drift_begin_to_server(cfg, project_id: str) -> dict:
         return {"ok": False, "message": "无法连接同步服务器，请检查服务器地址与网络。"}
     if resp.status_code != 200:
         return {"ok": False, "message": f"登记失败 HTTP {resp.status_code}: {resp.text[:200]}"}
-    data = resp.json()
+    # v8.15 检修：对齐 pull_from_server——200 但非 JSON（反代错误页）时友好报错而非抛异常
+    try:
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("非对象")
+    except Exception:
+        return {"ok": False, "message": "服务器响应格式错误，请确认地址指向 DeverAI 同步服务器"}
     return {"ok": True, **data}
 
 
@@ -291,7 +298,13 @@ async def drift_status_from_server(cfg, project_id: str = "") -> dict:
         return {"ok": False, "message": "无法连接同步服务器，请检查服务器地址与网络。"}
     if resp.status_code != 200:
         return {"ok": False, "message": f"查询失败 HTTP {resp.status_code}: {resp.text[:200]}"}
-    data = resp.json()
+    # v8.15 检修：同上，防 200+HTML 反代页炸出未捕获异常
+    try:
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("非对象")
+    except Exception:
+        return {"ok": False, "message": "服务器响应格式错误，请确认地址指向 DeverAI 同步服务器"}
     return {"ok": True, **data}
 
 
@@ -308,7 +321,13 @@ async def drift_finish_to_server(cfg, project_id: str) -> dict:
         return {"ok": False, "message": "无法连接同步服务器，请检查服务器地址与网络。"}
     if resp.status_code != 200:
         return {"ok": False, "message": f"回收失败 HTTP {resp.status_code}: {resp.text[:200]}"}
-    data = resp.json()
+    # v8.15 检修：同上，防 200+HTML 反代页炸出未捕获异常
+    try:
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("非对象")
+    except Exception:
+        return {"ok": False, "message": "服务器响应格式错误，请确认地址指向 DeverAI 同步服务器"}
     return {"ok": True, **data}
 
 

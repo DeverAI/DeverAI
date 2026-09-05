@@ -10,9 +10,12 @@ import base64
 import datetime
 import json
 import os
+import re as _re
 import secrets
 import subprocess
+import sys
 import time
+from collections import deque
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -27,6 +30,12 @@ from . import security
 
 router = APIRouter(prefix="/api/bridge", tags=["bridge"])
 
+# v8.23：pyqt.desktop.* 懒导入前置——服务以 cwd=webui 启动时 repo 根不在
+# sys.path，`from pyqt.desktop import ...` 会 ModuleNotFoundError（500）。
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if _REPO_ROOT.is_dir() and str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 # v8.13：与 desktop/tools.py 同源的工作区系统目录保护——工作区=项目根时，
 # 写/删/改名保护 app/desktop/data/backups/dev_log/updates/static 与 config.json/Err.log；
 # v8.13.1 只读保护收窄：仅 data/backups 与密钥文件禁止读，static/app/desktop 源码允许 Agent 查看。
@@ -35,6 +44,11 @@ PROTECTED_NAMES = {"pyqt", "webui", "lite", "data", "backups", "dev_log", "updat
 PROTECTED_FILES = {"Err.log", "config.json"}
 READ_PROTECTED_NAMES = {"data", "backups"}
 READ_PROTECTED_FILES = {"Err.log", "config.json"}
+# v8.15 检修：Windows 大小写不敏感，比较统一小写（目录改名 Data 后保护不得静默失效）
+PROTECTED_NAMES_LC = {n.lower() for n in PROTECTED_NAMES}
+PROTECTED_FILES_LC = {n.lower() for n in PROTECTED_FILES}
+READ_PROTECTED_NAMES_LC = {n.lower() for n in READ_PROTECTED_NAMES}
+READ_PROTECTED_FILES_LC = {n.lower() for n in READ_PROTECTED_FILES}
 
 
 def _protected_parts(p: Path, root: Path):
@@ -59,7 +73,7 @@ def _is_protected(p: Path, root: Path) -> bool:
     if info is None:
         return False
     parts, name = info
-    return parts[0] in PROTECTED_NAMES or name in PROTECTED_FILES
+    return parts[0].lower() in PROTECTED_NAMES_LC or name.lower() in PROTECTED_FILES_LC
 
 
 def _is_read_protected(p: Path, root: Path) -> bool:
@@ -68,7 +82,7 @@ def _is_read_protected(p: Path, root: Path) -> bool:
     if info is None:
         return False
     parts, name = info
-    return parts[0] in READ_PROTECTED_NAMES or name in READ_PROTECTED_FILES
+    return parts[0].lower() in READ_PROTECTED_NAMES_LC or name.lower() in READ_PROTECTED_FILES_LC
 
 
 SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", ".idea", ".vscode", "dist", "build"}
@@ -157,6 +171,177 @@ async def set_workspace(body: dict, user: dict = Depends(current_user)):
     update_config(bridge_workspace=str(p))
     # 返回 codename 给前端，绝对路径不外泄
     return {"ok": True, "workspace": workspace_codename()}
+
+
+# ============ v8.21 Git 分支实验（git worktree 机制，单例工作区内多工作树） ============
+# Fact.md 裁决：bridge_workspace 全局单例。本节 = git worktree（同仓库多工作树），
+# 切换 = 改 bridge_workspace 指向某 worktree 路径。路径限定 <workspace>/.worktrees/<name>。
+# 安全：create/switch/remove 走 danger_ok 审批（写盘/改全局/删目录）；list 只读。
+# v8.24 更名「Git 分支实验」：与 Design「WorkTree 独立安全备份审核」
+# （checkpoint.py/session_snap.py/dep_tree.py/audit.py 三层防线）区分，二者不是同一个东西。
+_WORKTREE_DIR = ".worktrees"
+
+
+def _worktree_root() -> Path:
+    """worktree 存放根：<workspace>/.worktrees。"""
+    return _workspace() / _WORKTREE_DIR
+
+
+def _git(args: list[str], cwd: Path = None, timeout: float = 15.0) -> tuple[int, str, str]:
+    """同步执行 git 命令，返回 (rc, stdout, stderr)。CREATE_NO_WINDOW 防弹出窗。"""
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        r = subprocess.run(
+            ["git"] + args, cwd=str(cwd or _workspace()),
+            capture_output=True, text=True, timeout=timeout,
+            creationflags=creationflags,
+        )
+        return r.returncode, r.stdout or "", r.stderr or ""
+    except FileNotFoundError:
+        return 127, "", "git 未安装"
+    except subprocess.TimeoutExpired:
+        return 124, "", "git 命令超时"
+
+
+@router.get("/worktree/list")
+async def worktree_list(user: dict = Depends(current_user)):
+    """列出当前仓库所有 git worktree。只读，无审批。
+    返回 [{path, branch, head, dirty, current}]。path 用相对名（.worktrees/<name>）或 codename。"""
+    root = _workspace()
+    rc, out, err = await asyncio.to_thread(_git, ["worktree", "list", "--porcelain"])
+    if rc != 0:
+        raise HTTPException(500, f"git worktree list 失败: {err.strip()[:200]}")
+    items = []
+    cur_ws = str(root.resolve())
+    for block in out.strip().split("\n\n"):
+        if not block.strip():
+            continue
+        path = ""
+        head = ""
+        branch = ""
+        for line in block.splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree "):].strip()
+            elif line.startswith("HEAD "):
+                head = line[len("HEAD "):].strip()
+            elif line.startswith("branch "):
+                branch = line[len("branch "):].strip()
+        if not path:
+            continue
+        # 相对名：主工作树用 codename，链接工作树用 .worktrees/<name>
+        try:
+            p_resolved = str(Path(path).resolve())
+            if p_resolved == cur_ws:
+                name = workspace_codename() or "main"
+                is_current = True
+            else:
+                rel = Path(path).name
+                name = rel
+                is_current = False
+        except (OSError, ValueError):
+            name = Path(path).name
+            is_current = False
+        # dirty 检测：git status --porcelain 非空即脏
+        _, status_out, _ = await asyncio.to_thread(
+            _git, ["status", "--porcelain"], Path(path)
+        )
+        items.append({
+            "name": name,
+            "branch": branch.replace("refs/heads/", "") if branch else "",
+            "head": head[:8] if head else "",
+            "dirty": bool(status_out.strip()),
+            "current": is_current,
+        })
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/worktree/create")
+async def worktree_create(body: dict, user: dict = Depends(current_user)):
+    """创建工作树：git worktree add <path> <branch>。
+    路径限定 <workspace>/.worktrees/<name>（防任意路径）。
+    需 danger_ok（写盘 + 可能创建分支）。"""
+    _readonly_block(user)
+    if not _strict_bool(body.get("danger_ok")):
+        raise HTTPException(403, "创建 WorkTree 需用户确认（danger_ok）")
+    name = str(body.get("name") or "").strip()
+    if not name or not _re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", name):
+        raise HTTPException(400, "name 需 1-64 位字母数字._-")
+    branch = str(body.get("branch") or "").strip()
+    base = str(body.get("base") or "").strip()
+    wt_root = _worktree_root()
+    wt_path = wt_root / name
+    if wt_path.exists():
+        raise HTTPException(409, "该 WorkTree 名已存在")
+    wt_root.mkdir(parents=True, exist_ok=True)
+    args = ["worktree", "add", str(wt_path)]
+    if branch:
+        args += ["-b", branch]
+        if base:
+            args.append(base)
+    elif base:
+        args.append(base)
+    rc, out, err = await asyncio.to_thread(_git, args)
+    if rc != 0:
+        # 清理空目录
+        try:
+            if wt_path.exists() and not any(wt_path.iterdir()):
+                wt_path.rmdir()
+        except Exception:
+            pass
+        raise HTTPException(500, f"git worktree add 失败: {err.strip()[:200]}")
+    return {"ok": True, "name": name, "branch": branch or "(detached)"}
+
+
+@router.post("/worktree/switch")
+async def worktree_switch(body: dict, user: dict = Depends(current_user)):
+    """切换 bridge_workspace 到指定 worktree（改全局单例）。
+    需 danger_ok。name 为 .worktrees/<name> 或主工作树 codename。"""
+    _readonly_block(user)
+    if not _strict_bool(body.get("danger_ok")):
+        raise HTTPException(403, "切换 WorkTree 需用户确认（danger_ok）")
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name 不能为空")
+    root = _workspace()
+    # 主工作树：name 等于当前 codename → 不切
+    cur_codename = workspace_codename() or ""
+    if name == cur_codename or name == "main":
+        return {"ok": True, "workspace": cur_codename, "switched": False}
+    # 链接工作树：必须在 .worktrees/<name>
+    if not _re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", name):
+        raise HTTPException(400, "name 非法")
+    wt_path = _worktree_root() / name
+    if not wt_path.is_dir():
+        raise HTTPException(404, "目标 WorkTree 不存在")
+    update_config(bridge_workspace=str(wt_path.resolve()))
+    return {"ok": True, "workspace": name, "switched": True}
+
+
+@router.post("/worktree/remove")
+async def worktree_remove(body: dict, user: dict = Depends(current_user)):
+    """移除工作树：git worktree remove <path>。
+    需 danger_ok（删目录）。不能移除当前工作树。"""
+    _readonly_block(user)
+    if not _strict_bool(body.get("danger_ok")):
+        raise HTTPException(403, "移除 WorkTree 需用户确认（danger_ok）")
+    name = str(body.get("name") or "").strip()
+    if not name or not _re.fullmatch(r"[A-Za-z0-9_.\-]{1,64}", name):
+        raise HTTPException(400, "name 非法")
+    root = _workspace()
+    cur_codename = workspace_codename() or ""
+    if name == cur_codename or name == "main":
+        raise HTTPException(400, "不能移除当前工作树")
+    wt_path = _worktree_root() / name
+    if not wt_path.is_dir():
+        raise HTTPException(404, "目标 WorkTree 不存在")
+    force = _strict_bool(body.get("force"))
+    args = ["worktree", "remove", str(wt_path)]
+    if force:
+        args.append("--force")
+    rc, out, err = await asyncio.to_thread(_git, args)
+    if rc != 0:
+        raise HTTPException(500, f"git worktree remove 失败: {err.strip()[:200]}")
+    return {"ok": True, "name": name}
 
 
 @router.post("/allow_ai_delete")
@@ -262,6 +447,116 @@ async def power(body: dict, user: dict = Depends(current_user)):
         raise HTTPException(500, "电源操作执行失败")
 
 
+# ---------------- v8.18 终端环境池（持久 cwd+env 轻量会话） ----------------
+# 环境=记住工作目录+环境变量的轻量上下文；每条命令继承后新起进程（Windows 友好、无孤儿 shell）。
+# 持久化 data/term_envs.json（原子写），跨浏览器刷新可用。
+TERM_ENVS_PATH = DATA_DIR / "term_envs.json"
+_term_env_lock = asyncio.Lock()
+_ENV_KEY_RE = _re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MAX_TERM_ENVS = 12
+_MAX_ENV_VARS = 20
+
+
+def _load_term_envs() -> dict:
+    data = load_json(TERM_ENVS_PATH, {"envs": []})
+    if not isinstance(data, dict) or not isinstance(data.get("envs"), list):
+        return {"envs": []}
+    return {"envs": [e for e in data["envs"] if isinstance(e, dict) and e.get("id")]}
+
+
+def _save_term_envs(data: dict) -> None:
+    save_json(TERM_ENVS_PATH, data)
+
+
+@router.post("/term/create")
+async def term_create(body: dict, user: dict = Depends(current_user)):
+    """创建一个持久命令行环境。body: {name?, cwd?, env_vars?}"""
+    _readonly_block(user)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "请求体必须为 JSON 对象")
+    name = str(body.get("name") or "").strip()[:40]
+    env_vars = body.get("env_vars")
+    if env_vars is None:
+        env_vars = {}
+    if not isinstance(env_vars, dict):
+        raise HTTPException(400, "env_vars 必须为对象")
+    if len(env_vars) > _MAX_ENV_VARS:
+        raise HTTPException(400, f"env_vars 最多 {_MAX_ENV_VARS} 项")
+    clean_vars = {}
+    for k, v in env_vars.items():
+        ks = str(k).strip()
+        vs = str(v if v is not None else "")
+        if not _ENV_KEY_RE.match(ks):
+            raise HTTPException(400, f"环境变量名不合法: {ks[:40]}")
+        clean_vars[ks] = vs[:2000]
+    cwd = _workspace()
+    rel = str(body.get("cwd") or "")
+    if rel:
+        cwd = _resolve(rel)
+        if not cwd.is_dir():
+            raise HTTPException(400, "cwd 不是目录")
+    async with _term_env_lock:
+        data = await asyncio.to_thread(_load_term_envs)
+        envs = data["envs"]
+        if len(envs) >= _MAX_TERM_ENVS:
+            raise HTTPException(400, f"环境数量已达上限（{_MAX_TERM_ENVS}），请先删除不用的环境")
+        if name and any(e.get("name") == name for e in envs):
+            raise HTTPException(400, "同名环境已存在")
+        eid = "te_" + secrets.token_hex(5)
+        env = {
+            "id": eid,
+            "name": name or f"env-{len(envs) + 1}",
+            "cwd_rel": rel.replace("\\", "/"),
+            "env_vars": clean_vars,
+            "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "last_used": "",
+            "last_cmd": "",
+            "last_rc": None,
+        }
+        envs.append(env)
+        await asyncio.to_thread(_save_term_envs, data)
+    return {"ok": True, "env": env}
+
+
+@router.get("/term/list")
+async def term_list(user: dict = Depends(current_user)):
+    """列出全部持久命令行环境。"""
+    data = await asyncio.to_thread(_load_term_envs)
+    return {"ok": True, "envs": data["envs"]}
+
+
+@router.post("/term/delete")
+async def term_delete(body: dict, user: dict = Depends(current_user)):
+    """删除一个持久命令行环境。body: {id}"""
+    _readonly_block(user)
+    eid = str((body or {}).get("id") or "").strip()
+    if not eid:
+        raise HTTPException(400, "缺少 id")
+    async with _term_env_lock:
+        data = await asyncio.to_thread(_load_term_envs)
+        envs = data["envs"]
+        data["envs"] = [e for e in envs if e.get("id") != eid]
+        if len(data["envs"]) == len(envs):
+            raise HTTPException(404, "环境不存在")
+        await asyncio.to_thread(_save_term_envs, data)
+    return {"ok": True}
+
+
+async def _term_resolve_and_touch(ref: str):
+    """按 id 或 name 解析环境；命中则更新 last_used。返回 (env_dict|None)。"""
+    ref = str(ref or "").strip()
+    if not ref:
+        return None
+    async with _term_env_lock:
+        data = await asyncio.to_thread(_load_term_envs)
+        for e in data["envs"]:
+            if e.get("id") == ref or e.get("name") == ref:
+                e["last_used"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                await asyncio.to_thread(_save_term_envs, data)
+                return dict(e)
+    return None
+
+
 # ------------------------------------------------------------------ #
 @router.post("/run_command")
 async def run_command(body: dict, user: dict = Depends(current_user)):
@@ -290,33 +585,94 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
     except (TypeError, ValueError):
         timeout = 120
 
-    async def _kill_tree() -> None:
-        """v8.14：Windows 下 proc.kill() 只杀 shell 本体，孙进程（cmd /c start ...）残留；
-        改用 taskkill /T /F 杀整棵进程树，失败回退 proc.kill()。"""
-        if proc is None or proc.returncode is not None:
-            return
-        if os.name == "nt" and proc.pid:
-            try:
-                k = await asyncio.create_subprocess_exec(
-                    "taskkill", "/PID", str(proc.pid), "/T", "/F",
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-                    creationflags=subprocess.CREATE_NO_WINDOW)
-                try:
-                    await asyncio.wait_for(k.wait(), timeout=10)
-                except asyncio.TimeoutError:
-                    pass
-            except BaseException:
-                pass  # v8.14b：含 CancelledError——清理路径必须走到末尾的同步兜底强杀
+    # ---- v8.18：持久环境 / 更新间隔 / 任务后杀进程 + 默认值 warning ----
+    warnings = []
+    if body.get("timeout") is None:
+        warnings.append(f"timeout 使用默认值 {timeout}s")
+    term_env = None
+    if body.get("env") is None:
+        warnings.append("env 使用默认值（一次性：工作区根 + 当前服务端环境）")
+    else:
+        term_env = await _term_resolve_and_touch(body.get("env"))
+        if term_env is None:
+            warnings.append(f"env '{str(body.get('env'))[:40]}' 不存在，已回退一次性会话")
+    try:
+        ui_val = body.get("update_interval")
+        if ui_val is None:
+            update_interval = 0.0
+            warnings.append("update_interval 使用默认值 0（不发送运行中心跳）")
+        else:
+            update_interval = min(max(float(ui_val), 0.0), 120.0)
+            if update_interval != update_interval:  # NaN
+                update_interval = 0.0
+    except (TypeError, ValueError):
+        update_interval = 0.0
+        warnings.append("update_interval 非法，使用默认值 0")
+    if body.get("kill_after") is None:
+        kill_after = True
+        warnings.append("kill_after 使用默认值 true（超时/停止时杀整棵进程树）")
+    else:
+        kill_after = _strict_bool(body.get("kill_after"))
+
+    # 环境落点：显式 cwd 优先，其次环境的 cwd_rel；环境变量合并进服务端环境
+    env_cwd = cwd
+    if term_env and not rel:
         try:
-            if proc.returncode is None:
-                proc.kill()
-        except ProcessLookupError:
+            cand = _resolve(str(term_env.get("cwd_rel") or ""))
+            if cand.is_dir():
+                env_cwd = cand
+        except Exception:
+            pass
+    env_vars = dict(term_env.get("env_vars") or {}) if term_env else {}
+    if term_env:
+        try:
+            async with _term_env_lock:
+                data = await asyncio.to_thread(_load_term_envs)
+                for e in data["envs"]:
+                    if e.get("id") == term_env.get("id"):
+                        e["last_cmd"] = cmd[:200]
+                        await asyncio.to_thread(_save_term_envs, data)
+                        break
+        except Exception:
             pass
 
     async def _gen():
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         proc = None
+        left_running = False  # v8.18：提前初始化——客户端在首个 yield 处断开时 finally 也可安全引用
+
+        async def _kill_tree() -> None:
+            """v8.14：Windows 下 proc.kill() 只杀 shell 本体，孙进程（cmd /c start ...）残留；
+            改用 taskkill /T /F 杀整棵进程树，失败回退 proc.kill()。
+            v8.15 检修：必须定义在 _gen 内——proc 是 _gen 的局部变量，
+            定义在外层会因闭包查不到而 NameError，整树清理从未真正生效过。"""
+            if proc is None or proc.returncode is not None:
+                return
+            if os.name == "nt" and proc.pid:
+                try:
+                    k = await asyncio.create_subprocess_exec(
+                        "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW)
+                    try:
+                        await asyncio.wait_for(k.wait(), timeout=10)
+                    except asyncio.TimeoutError:
+                        pass
+                except BaseException:
+                    pass  # v8.14b：含 CancelledError——清理路径必须走到末尾的同步兜底强杀
+            try:
+                if proc.returncode is None:
+                    proc.kill()
+            except ProcessLookupError:
+                pass
+
         try:
+            # v8.18：默认值 warning 先行下发（AI/UI 均可见）
+            if warnings:
+                yield f'data: {json.dumps({"warnings": warnings}, ensure_ascii=False)}\n\n'
+            spawn_env = None
+            if env_vars:
+                spawn_env = {**os.environ, **{str(k): str(v) for k, v in env_vars.items()}}
             try:
                 # v8.14：limit 提升到 1MB——StreamReader 默认 64KB 行上限会让
                 # 单行超长输出（如压缩后的 bundle.js）触发 ValueError 断流
@@ -325,7 +681,8 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     stdin=asyncio.subprocess.DEVNULL,
-                    cwd=str(cwd),
+                    cwd=str(env_cwd),
+                    env=spawn_env,
                     creationflags=creationflags,
                     limit=1024 * 1024,
                 )
@@ -335,35 +692,55 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
                 yield f'data: {json.dumps({"done": True, "rc": -1}, ensure_ascii=False)}\n\n'
                 return
             deadline = time.monotonic() + timeout
+            started = time.monotonic()
             timed_out = False
+            left_running = False
             rc = -1
+            out_tail = deque(maxlen=40)
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     timed_out = True
                     break
+                # v8.18：update_interval>0 时按间隔分片等待——静默期到点发心跳（K210 刷写静默场景）
+                chunk = min(remaining, update_interval) if update_interval > 0 else remaining
                 try:
-                    line = await asyncio.wait_for(proc.stdout.readline(), remaining)
+                    line = await asyncio.wait_for(proc.stdout.readline(), chunk)
                 except asyncio.TimeoutError:
+                    if update_interval > 0 and time.monotonic() < deadline:
+                        yield f'data: {json.dumps({"update": True, "elapsed_s": round(time.monotonic() - started, 1), "tail": "\n".join(out_tail)[-600:]}, ensure_ascii=False)}\n\n'
+                        continue
                     timed_out = True
                     break
                 if not line:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
+                out_tail.append(text)
                 yield f'data: {json.dumps({"line": text}, ensure_ascii=False)}\n\n'
             if timed_out:
-                await _kill_tree()
-            try:
-                rc = await asyncio.wait_for(proc.wait(), timeout=15)
-            except asyncio.TimeoutError:
-                await _kill_tree()
-                # P2-16：二次等待同样限时（对齐 lite_server），极端情况下不挂起生成器
+                # v8.18：kill_after=false → 超时不杀树，进程保留后台运行（left_running 标记）
+                if kill_after:
+                    await _kill_tree()
+                else:
+                    left_running = True
+            if left_running:
+                rc = -1
+            else:
                 try:
-                    rc = await asyncio.wait_for(proc.wait(), timeout=10)
+                    rc = await asyncio.wait_for(proc.wait(), timeout=15)
                 except asyncio.TimeoutError:
-                    rc = -1
-                    timed_out = True
-            yield f'data: {json.dumps({"done": True, "rc": rc, "timed_out": timed_out}, ensure_ascii=False)}\n\n'
+                    if kill_after:
+                        await _kill_tree()
+                        # P2-16：二次等待同样限时（对齐 lite_server），极端情况下不挂起生成器
+                        try:
+                            rc = await asyncio.wait_for(proc.wait(), timeout=10)
+                        except asyncio.TimeoutError:
+                            rc = -1
+                            timed_out = True
+                    else:
+                        left_running = True
+                        rc = -1
+            yield f'data: {json.dumps({"done": True, "rc": rc, "timed_out": timed_out, "left_running": left_running}, ensure_ascii=False)}\n\n'
         except asyncio.CancelledError:
             # v8.14：客户端断开走取消语义——清理后重抛，不在取消路径中 yield
             await _kill_tree()
@@ -385,8 +762,10 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
             yield f'data: {json.dumps({"done": True, "rc": -1, "error": "执行异常"}, ensure_ascii=False)}\n\n'
         finally:
             # 内存安全：客户端断开/异常/超时时确保子进程被 kill、管道被关闭
+            # v8.18：kill_after=false 时 left_running=True → 不杀进程（用户显式要求保留），
+            # 仅关闭读端管道防 fd 泄漏；CancelledError（客户端断开）路径仍无条件杀树。
             if proc is not None:
-                if proc.returncode is None:
+                if proc.returncode is None and not left_running:
                     try:
                         proc.kill()
                     except ProcessLookupError:
@@ -397,11 +776,12 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
                         proc.stdout.close()
                     except Exception:
                         pass
-                try:
-                    # v8.14：等待也限时，防止极端情况下生成器悬挂
-                    await asyncio.wait_for(proc.wait(), timeout=10)
-                except Exception:
-                    pass
+                if not left_running:
+                    try:
+                        # v8.14：等待也限时，防止极端情况下生成器悬挂
+                        await asyncio.wait_for(proc.wait(), timeout=10)
+                    except Exception:
+                        pass
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
 
@@ -758,7 +1138,9 @@ async def fs_grep(
                     break
         for f in files:
             try:
-                head = f.read_bytes()[:8192]
+                # v8.15 检修：只读前 8KB 探测二进制（read_bytes 会把数 GB 文件整读进内存）
+                with open(f, "rb") as bf:
+                    head = bf.read(8192)
                 if b"\x00" in head:
                     continue
                 with open(f, "r", encoding="utf-8", errors="replace") as fh:
@@ -969,6 +1351,269 @@ async def browser_screenshot(body: dict, user: dict = Depends(current_user)):
     # 失败文案可能含本机绝对路径/浏览器 stderr，统一泛化回显
     if not isinstance(result, dict) or not result.get("ok"):
         return {"ok": False, "output": "截图失败（可能是无可用浏览器或页面无法访问）。"}
+    return result
+
+
+# ------------------------------------------------------------------ #
+# v8.23 浏览器 CDP 直控 + 外部软件（exe）自动化
+# 复用 desktop/browser_ctl 与 desktop/win_automate（同权：桌面版已有的
+# 成熟实现，网页版桥接转发；安全闸在服务端硬校验，不依赖前端自觉）。
+# ------------------------------------------------------------------ #
+
+_BCTL_ACTIONS = ("launch", "navigate", "click", "type", "press_keys", "close")
+# 受控浏览器操作的是独立临时 profile 的自动化实例（非用户主浏览器），
+# URL 校验沿用 browser_ctl 自带校验器（launch 允许内网——默认打开本机网页版）。
+_EXE_JOURNAL_PATH = DATA_DIR / "ui_automation_journal.jsonl"
+# 只能关闭由本桥 exe/launch 启动过的进程（防杀任意进程；pid 复用风险由
+# 「终止即出白名单」缓解，与桌面版同规则）
+_EXE_LAUNCHED: set = set()
+_EXE_ACTIONS = ("launch", "list_windows", "screenshot", "click", "type",
+                "press_keys", "close", "bring_to_front", "journal")
+
+
+def _exe_journal_record(tool: str, args: dict | None, result: dict | None) -> None:
+    """exe 自动化动作落 journal（best-effort，失败不阻塞）。与 Err.log 分离。"""
+    import datetime as _dt
+    entry = {
+        "ts": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "tool": str(tool)[:80],
+        "args": {k: str(v)[:2000] for k, v in (args or {}).items()},
+        "ok": bool((result or {}).get("ok", False)),
+        "output": str((result or {}).get("output", ""))[:2000],
+    }
+    try:
+        _EXE_JOURNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_EXE_JOURNAL_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _exe_journal_read(tail: int = 50, tool: str = "") -> list:
+    if not _EXE_JOURNAL_PATH.exists():
+        return []
+    out = []
+    try:
+        with open(_EXE_JOURNAL_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if tool and e.get("tool") != tool:
+                    continue
+                out.append(e)
+    except Exception:
+        return []
+    out.reverse()
+    return out[:max(0, min(tail, 500))]
+
+
+@router.post("/browser_ctl")
+async def browser_ctl_op(body: dict, user: dict = Depends(current_user)):
+    """受控浏览器直控（CDP，仅 127.0.0.1 调试口；独立临时 profile）。"""
+    action = str(body.get("action") or "").strip()
+    if action not in _BCTL_ACTIONS:
+        raise HTTPException(400, "未知 browser_ctl 操作")
+    _readonly_block(user)
+    from pyqt.desktop import browser_ctl as bc
+    url = str(body.get("url") or "").strip()
+    if action in ("launch", "navigate") and (not url or len(url) > 2048):
+        raise HTTPException(400, "URL 无效")
+    try:
+        if action == "launch":
+            result = await asyncio.to_thread(bc.launch_with_fallback, url)
+        elif action == "navigate":
+            result = await asyncio.to_thread(bc.navigate, url)
+        elif action == "click":
+            sel = str(body.get("selector") or "")[:500]
+            txt = str(body.get("text") or "")[:500]
+            if not sel and not txt:
+                raise HTTPException(400, "需要 selector 或 text 之一")
+            result = await asyncio.to_thread(bc.click, sel, txt)
+        elif action == "type":
+            text = str(body.get("text") or "")
+            if not text or len(text) > 2000:
+                raise HTTPException(400, "text 无效（1-2000 字符）")
+            result = await asyncio.to_thread(bc.type_text, text)
+        elif action == "press_keys":
+            keys = str(body.get("keys") or "").strip()
+            if not keys or len(keys) > 100:
+                raise HTTPException(400, "keys 无效")
+            result = await asyncio.to_thread(bc.press_keys, keys)
+        else:  # close
+            result = await asyncio.to_thread(bc.close)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("[web] browser_ctl 失败", e)
+        return {"ok": False, "output": "受控浏览器操作失败（会话可能未启动）。"}
+    # 回显泛化（底层文案可能含本机路径）
+    if isinstance(result, dict):
+        out = result.get("output") or ""
+        result["output"] = _redact_ws(str(out))[:2000]
+        return result
+    return {"ok": False, "output": "受控浏览器操作失败。"}
+
+
+@router.post("/exe")
+async def exe_op(body: dict, user: dict = Depends(current_user)):
+    """外部软件（exe）自动化：启动/枚举窗口/截图/点击/输入/按键/关闭。
+
+    硬闸（服务端强制）：close 仅限本桥 launch 启动过的进程；click 坐标
+    越界拒绝；screenshot 路径受系统保护目录约束。所有动作落 journal。
+    """
+    action = str(body.get("action") or "").strip()
+    if action not in _EXE_ACTIONS:
+        raise HTTPException(400, "未知 exe 操作")
+    # journal / list_windows 只读；其余都按写权联动只读锁
+    if action not in ("journal", "list_windows"):
+        _readonly_block(user)
+    from pyqt.desktop import win_automate as wa
+    args_log = {k: v for k, v in body.items() if k != "action"}
+
+    if action == "journal":
+        try:
+            tail = int(body.get("tail") or 50)
+        except (TypeError, ValueError):
+            tail = 50
+        items = _exe_journal_read(tail=tail, tool=str(body.get("tool") or ""))
+        if not items:
+            return {"ok": True, "output": "暂无外部软件操作记录。", "count": 0}
+        lines = []
+        for e in items[:50]:
+            a = ", ".join(f"{k}={v}" for k, v in (e.get("args") or {}).items())
+            lines.append(f"- [{e['ts']}] {e['tool']} ({'成功' if e.get('ok') else '失败'}): {a}\n    {str(e.get('output', ''))[:150]}")
+        return {"ok": True, "output": f"最近外部软件操作记录（共 {len(items)} 条）：\n" + "\n".join(lines),
+                "count": len(items)}
+
+    if action == "launch":
+        path = str(body.get("path") or "").strip()
+        args_list = body.get("args")
+        if not path or len(path) > 500:
+            raise HTTPException(400, "path 无效")
+        if args_list is not None:
+            if not isinstance(args_list, list) or len(args_list) > 20 \
+                    or any(not isinstance(a, str) or len(a) > 500 or "\x00" in a for a in args_list):
+                raise HTTPException(400, "args 无效（≤20 个字符串，每个 ≤500 字符）")
+        cwd = str(body.get("cwd") or "").strip()[:500]
+        result = await asyncio.to_thread(wa.launch_exe, path, args_list or [], cwd)
+        if result.get("ok"):
+            try:
+                _EXE_LAUNCHED.add(int(result.get("pid")))
+            except (TypeError, ValueError):
+                pass
+        _exe_journal_record("exe_launch", args_log, result)
+        return result
+
+    if action == "list_windows":
+        result = await asyncio.to_thread(wa.list_windows)
+        # 窗口标题可能含敏感信息，但这是用户本人查看自己的窗口——原样返回
+        return result
+
+    if action == "screenshot":
+        rel = str(body.get("path") or "").strip()
+        if not rel.lower().endswith((".png", ".jpg", ".jpeg")):
+            raise HTTPException(400, "path 必须以 .png/.jpg/.jpeg 结尾")
+        p = _resolve(rel)
+        if _is_protected(p, _workspace()):
+            raise HTTPException(403, "该路径属于系统受保护目录，禁止写入截图")
+        try:
+            hwnd = int(body.get("hwnd") or 0)
+        except (TypeError, ValueError):
+            hwnd = 0
+        if not hwnd:
+            title = str(body.get("title") or "").strip()[:200]
+            hwnd = await asyncio.to_thread(wa.find_window, title) if title else 0
+        if not hwnd:
+            result = {"ok": False, "output": "未找到目标窗口（先用 exe/list_windows 查 hwnd，或提供 title）。"}
+            _exe_journal_record("exe_screenshot", args_log, result)
+            return result
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            raise HTTPException(500, "创建目录失败")
+        result = await asyncio.to_thread(wa.screenshot_window, hwnd, str(p))
+        _exe_journal_record("exe_screenshot", args_log, result)
+        return result
+
+    if action == "click":
+        try:
+            x = int(body.get("x") if body.get("x") is not None else -1)
+            y = int(body.get("y") if body.get("y") is not None else -1)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "x/y 必须是整数")
+        if x < 0 or y < 0:
+            raise HTTPException(400, "缺少有效坐标 x/y（≥0）")
+        # 绝对上限（防屏幕尺寸检测失败时坐标越界仍真实点击）
+        if x > 20000 or y > 20000:
+            result = {"ok": False, "output": f"坐标 ({x},{y}) 超出合理范围。"}
+            _exe_journal_record("exe_click", args_log, result)
+            return result
+        sw, sh = await asyncio.to_thread(wa.screen_size)
+        if sw > 0 and sh > 0 and (x >= sw or y >= sh):
+            result = {"ok": False, "output": f"坐标 ({x},{y}) 超出屏幕范围（{sw}x{sh}）。"}
+            _exe_journal_record("exe_click", args_log, result)
+            return result
+        result = await asyncio.to_thread(wa.click, x, y)
+        _exe_journal_record("exe_click", args_log, result)
+        return result
+
+    if action == "type":
+        text = str(body.get("text") or "")
+        if not text or len(text) > 2000:
+            raise HTTPException(400, "text 无效（1-2000 字符）")
+        result = await asyncio.to_thread(wa.type_text, text)
+        _exe_journal_record("exe_type", args_log, result)
+        return result
+
+    if action == "press_keys":
+        keys = str(body.get("keys") or "").strip()
+        if not keys or len(keys) > 100:
+            raise HTTPException(400, "keys 无效")
+        result = await asyncio.to_thread(wa.press_keys, keys)
+        _exe_journal_record("exe_press_keys", args_log, result)
+        return result
+
+    if action == "bring_to_front":
+        try:
+            hwnd = int(body.get("hwnd") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "hwnd 必须是整数")
+        if not hwnd:
+            raise HTTPException(400, "缺少 hwnd")
+        result = await asyncio.to_thread(wa.bring_to_front, hwnd)
+        _exe_journal_record("exe_bring_to_front", args_log, result)
+        return result
+
+    # close：白名单硬闸
+    try:
+        hwnd = int(body.get("hwnd") or 0)
+        pid = int(body.get("pid") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "hwnd/pid 必须是整数")
+    if not hwnd and not pid:
+        raise HTTPException(400, "需要 hwnd 或 pid 之一")
+    if pid:
+        if pid not in _EXE_LAUNCHED:
+            result = {"ok": False, "output": f"拒绝：pid={pid} 不是由 exe_launch 启动的进程，禁止终止。"}
+            _exe_journal_record("exe_close", args_log, result)
+            return result
+        result = await asyncio.to_thread(wa.terminate_pid, pid)
+        if result.get("ok"):
+            _EXE_LAUNCHED.discard(pid)
+        _exe_journal_record("exe_close", args_log, result)
+        return result
+    wpid = await asyncio.to_thread(wa.window_pid, hwnd)
+    if not wpid or wpid not in _EXE_LAUNCHED:
+        result = {"ok": False, "output": f"拒绝：hwnd={hwnd} 不属于由 exe_launch 启动的进程，禁止关闭。"}
+        _exe_journal_record("exe_close", args_log, result)
+        return result
+    result = await asyncio.to_thread(wa.close_window, hwnd)
+    _exe_journal_record("exe_close", args_log, result)
     return result
 
 
