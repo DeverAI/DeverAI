@@ -154,6 +154,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `auto_score.py` | 模型自动打分与画像更新（judge_model + web_search，时间戳与互斥） |
 | `checkpoint.py` | 文件级版本快照（写前备份、按文件聚合、保留策略、越界防护） |
 | `session_snap.py` | 任务级会话快照（每轮 zip 打包、轮内回退点、只读状态机、zip-slip 防护、总上限淘汰） |
+| `file_protect.py` | 用户文件保护（v8.25）：用户资产后缀 AI 禁写禁命令、用户外部修改感知（data/file_protect.json）、一键全量备份、重名/命名不清治理与隔离；v8.26 起含工作副本（workcopy/）生成与豁免 |
 | `dep_tree.py` | 依赖树：正则扫描 import/require、大小下限、缺文件/过小报警 |
 | `suggest.py` | 建议系统（TRAE CUE 式，消息发送后生成精选建议） |
 | `audit.py` | 回退审核日志：回退/删除/恢复/漂移回本地动作写 `data/audit.jsonl` |
@@ -490,6 +491,28 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 129. **同步服务器落地（v8.24）**：`sync_server.py` 补建随仓库分发——`/push`/`/pull` 双格式原样写回（决策106）；`/chat` 冷备 Agent 续聊（`_CHAT_LOCK` 读→LLM→写三段式防 lost update、每轮 `unacked_count+1`、与 `/push` 文件写互斥、加密主快照永不降级只在无口令格式时回写）；`/drift/begin|status|finish` 状态机；`/cmd/register|poll|heartbeat|result|dispatch|nodes|results` 远程指挥（节点 TTL 2 分钟、命令队列 maxlen=100、结果 TTL 10 分钟且体限 1MB，惰性 GC）；HTML `/`（漂移状态 + 冷备会话续聊 + 远程指挥控制台，危险命令勾选 danger_ok）与 `/chat/page`（手机/平板续聊页），零 CDN 无 emoji。鉴权同决策 99：`SYNC_TOKEN`/`X-Sync-Token`（HTML 页可用 `?token=`）、未设令牌仅环回、XFF 存在强制令牌、CORS 收紧环回源、请求体按端点分级限 64MB/1MB/2MB。
 130. **Git 分支实验（v8.21 引入，v8.24 更名）**：git worktree 多工作树能力——bridge.py 四端点（list 只读；create/switch/remove 需 `danger_ok` 严格审批，路径限定 `<workspace>/.worktrees/<name>`，`_safe_name` 拦 `.`/`..`）+ 网页「分支实验」面板 + worktree_list/worktree_switch 工具 + 系统提示词感知。更名原因：本项目术语 **WorkTree = 独立安全备份审核**（特点3，checkpoint/session_snap/dep_tree/audit 三层防线），与 git worktree 不是同一概念，避免混淆（内部标识符/端点路径保留 worktree 字样，仅 UI 文案与提示词更名）。
 
+### 6.15 用户文件保护、工作副本与编辑器统一（v8.25/v8.26）
+
+131. **用户文件保护（v8.25）**：`file_protect.py`——USER_SUFFIXES（PPT/Excel/Word/PDF/设计源文件/视频/压缩包等）视为用户手工资产：AI 文本工具（write/edit/delete）一律拒绝、run_command 触碰即拦截；`data/file_protect.json` 记录 {rel: {size, mtime, actor}}，AI 写后记录 actor=ai，scan 发现与记录不符即判「人类在外部改过」并要求用户一键备份+授权；一键全量备份 `backups/<ts>_full.zip`（不含 backups/.git/缓存）；重名/命名不清治理（detect_ambiguous 归一化词干分组 + UNCLEAR_PATTERNS，quarantine 移入 `backups/quarantine/<ts>/`）。四端接线：桌面 tools/checkpoint（二进制快照 save_checkpoint_bytes）、webui bridge/snap_bridge、lite_server；网页版前端 tools.js 同源 USER_ASSET_SUFFIXES。开关：ENABLE_USER_FILE_PROTECT / ENABLE_FULL_BACKUP / ENABLE_AMBIGUOUS_GUARD。
+132. **禁碰语义裁决（v8.26，用户原话「AI禁止碰不是不能碰，而是拷贝，原内容不修改」）**：对用户资产从「硬拦截」升级为「拦截+引导拷贝」——新工具 `copy_user_asset`（桌面 tools.py + webui `/api/bridge/fs/workcopy` + tools.js，经审批门）把原文件按「时间-作者-内容」规则拷贝为 `workcopy/` 下工作副本（如 `20260905-AI-报告.pptx`），原文件永不修改；workcopy/ 目录内的 AI 创建副本豁免用户资产保护，AI 可自由读写处理；阻断文案统一引导 AI 先申请工作副本。开关：桌面 `ENABLE_WORK_COPY`（config/build_tool_defs/settings 三层），网页端点后端强制 `enable_work_copy`（server_config，前端 CFG_DEFAULT 同步）。阶段3 复检加固：`_is_workcopy` 拒绝 `..` 穿越与盘符（防 `workcopy/../` 前缀绕过豁免）；`make_workcopy` 拒绝 data/backups/sessions 等敏感目录与 config.json/Err.log/api.txt/api_keys.py/.env 敏感名（防密钥/运行数据经工作副本外带）；webui 审批 dangerous=true 与桌面对齐。Lite/DSH 插件不接（用户裁决）。
+133. **编辑器两端统一 WorkTree 保护（v8.26）**：桌面编辑器保存前快照（source=human）为既有行为；网页版编辑器补齐同语义（saveActiveTab 保存前 POST /checkpoint/save source=human，不设 dirty 条件——外部改盘而标签未 dirty 时同样兜底，失败 toast 提示不阻塞保存）；两端编辑器统一「版本历史」入口（网页编辑器标签栏「历史」按钮复用 chat.js openVersionDialog 的 /checkpoint/versions；桌面编辑器右键菜单「版本历史…」接 VersionRestoreDialog）；网页版 fs/write 行尾保持对齐桌面（写前嗅探原文件 CRLF 风格，save_text 增加 crlf 参数），消除 CRLF 字节漂移跨端差异。
+134. **新建文件命名规则（v8.26，用户裁决）**：AI 创建新文件时优先沿用工作区已有命名惯例（先看同目录与资料）；无惯例时用「时间-作者-内容」格式（YYYYMMDD-作者-描述；用户交付物作者=用户，AI 中间产物作者=AI）。规则注入 AGENT_SAFETY_RULES / AGENT_SAFETY_RULES_WEB。
+
+### 6.16 真·算力漂移：服务器端续算（v8.27）
+
+135. **密钥加密随漂移上服务器（v8.27，用户裁决「密钥同样传上服务器但必须加密；MQTT 不采用」）**：api_key/api_base_url/model/search_api_key/dashscope_api_key/drift_api_key 六字段打包为 AES-GCM 信封（复用 sync.py PBKDF2(sync_password, 每安装盐) 派生密钥，v:2 格式），作为不透明串 `keys_enc` 随 /push 上传用户自有服务器；服务器仅存密文、永不解密落盘，服务器端普通端续算时凭用户输入的 sync_password 解密到**内存**（临时供 LLM 客户端使用，进程退出即失）。sync_token/sync_password 自身永不上传。安全红线「API Key 仅本机」修订为：**本机明文（data/config.json）；自有服务器仅密文信封；解密只发生在续算进程内存**。未设 sync_password 时不加密钥，服务器端改用既有 `drift_api_key/drift_api_base` 直连字段。
+136. **不看守模式（v8.27，用户裁决「不使用提问工具、审批工具，能做的做完，没做完的保留进度」）**：`agent_unattended`（CLI `--unattended` / 服务器续算强制开启）——审批门改自动策略：非危险动作自动放行，危险动作不执行并记入保留进度台账；提示词注入「不看守纪律」（禁用提问、自行判断、完成能完成的、结尾给出未完成清单）。台账持久化为工作区内 `unattended_progress.json`（随快照往返，服务器续算接得上、回本机也接得上）。
+137. **会话迁移与服务器落点（v8.27，用户裁决「在合适位置断掉会话上传，然后继续会话；同步端把工作区放到 APPDATA；WorkTree 等 AI 不可乱动的东西同步到对应位置」）**：断点沿用既有轮边界（退出漂移 / 周期自动推送），上传会话历史 + 工作区 + 数据子集；服务器端续算 = 在服务器上以普通端（CLI `--workspace <工作区>`）继续同一会话。同步端素材化落点：`%LOCALAPPDATA%\DeverAI\drift\<项目号>\workspace\`（可用 `SYNC_WS_DIR` 环境变量覆盖），WorkTree/记忆/工作区设置/保护状态等放对应 `data/` 位（遵守「work tree/设置/记忆绝不放工作区内」既有约束）。回传沿用 /pull 合并去重。
+138. **退出上传模式（v8.27，用户裁决「退出时选一次并以后不再询问」）**：`drift_upload_mode`——`minimal`（最简：WorkTree 即时变更 + 相关数据文件增量上传）/ `full`（完整：全工作区 + data 子集 checkpoints/audit/记忆/设置）。漂移退出对话框首次询问并记住选择（写入 config），此后不再询问；设置页可改。
+
+### 6.17 备份范围、引用交付与 Agent+ 预设（v8.28）
+
+139. **备份范围控制（v8.28，用户裁决「C 盘爆红 → 允许备份每个文件的上两个版本」）**：`checkpoint_keep_per_file`（默认 2，可配 1-50）——checkpoint 每文件保留版本数由固定 20 改为可配，`_gc` 按配置裁剪；session_snap 总上限与删除前 AI 独立审查、Copilot 拦截危险操作等 WorkTree 安全语义不变。
+140. **换机环境提醒（v8.28）**：漂移续算状态（`drift.is_drifting()`）下自动注入【换机环境提醒】——依赖/路径/服务/外部程序可能需重配，动手先验证环境，做不了如实说明保留进度；本地与服务器续算端同源生效（服务器 data 位含 drift_state.json）。
+141. **变更栏 + 引用卡片（v8.28，网页端）**：Agent 循环采集本轮文件类工具改动（write/edit/delete/mkdir/rename/copy_user_asset），`run_done` 事件携带 `changes` 渲染「变更栏」卡片——HTML 文件给「预览」（iframe sandbox 独立渲染）与「源码」（默认折叠、懒加载、可复制）两种引用；文本/代码给「源码+复制」；其余「仅文件」不展开。多图引用 = 微信式扑克牌叠放（悬停距离驱动排斥位移、点击 lightbox 放大），单图缩略图+放大；图片走 `/fs/image` 端点。
+142. **云端交付纪律（v8.28）**：客户端配置了 `sync_server_url`（自动上云漂移）时，系统提示注入——用户端可能无法直接预览工作区文件，任务结束必须在变更栏用引用形式交付产出，不要只报文件路径。
+143. **Agent+ 模式预设（v8.28）**：`AGENT_PRESETS`（unattended=无人值守——禁提问、非危险自动放行、把能干的活先干完；daily=日常值守）+ `apply_agent_preset`（dataclasses.replace 不污染原对象）+ CLI `--preset`；不看守模式下 diff 预览自动放行（不阻塞）。
+
 ---
 
 
@@ -569,6 +592,14 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `ENABLE_BROWSER_DEVTOOLS` | True | F12 开发者工具（CDP Networks/Storage/Console/Sources） |
 | `ENABLE_AUDIT_LOG` | True | 回退审核日志 |
 | `ENABLE_FILE_PARTITION` | True | 文件分区规划并发调度 |
+| `ENABLE_USER_FILE_PROTECT` | True | 用户文件保护（v8.25：PPT/Excel/Word/PDF 等用户资产 AI 禁写禁命令） |
+| `ENABLE_FULL_BACKUP` | True | 一键备份完整工作区（backups/&lt;ts&gt;_full.zip） |
+| `ENABLE_AMBIGUOUS_GUARD` | True | 重名/命名不清治理（识别/备份/转移） |
+| `ENABLE_WORK_COPY` | True | 工作副本（v8.26：copy_user_asset 拷贝用户资产到 workcopy/，原文件不动） |
+| `checkpoint_keep_per_file` | 2 | v8.28: 每文件保留 checkpoint 版本数（上两版默认，C 盘友好，可配 1-50） |
+| `agent_preset` / `AGENT_PRESETS` | 空 | v8.28: Agent+ 模式预设（unattended/daily，CLI --preset 应用） |
+| `ENABLE_UNATTENDED` | False | 不看守模式（v8.27：禁提问；非危险自动放行，危险跳过记 unattended_progress.json 台账） |
+| `drift_upload_mode` | 空 | 漂移上传模式（v8.27：空=漂移退出时询问一次；minimal=WorkTree 即时变更增量 / full=全工作区，记住后不再问） |
 | `ENABLE_TRACE_ADVANCED` | True | 工作轨迹高级能力 |
 | `ENABLE_VOICE_ASSISTANT` | False | 语音助手「小龙」2.0（浮层宠物化身 + 多轮对话 + 双模输入 + 进度查询） |
 | `ENABLE_INTEGRITY` | True | DeveraiIntegrityService 完整性校验（HKDF + HMAC-SHA256） |
@@ -599,6 +630,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `allow_ai_delete` | False | 命令桥是否允许删除文件 |
 | `llm_allow_loopback` | True | LLM 代理是否允许环回地址（本地 LLM；生产多租户设 False） |
 | `power_authorized` | False | 电源操作是否已授权 |
+| `enable_work_copy` | True | v8.26：工作副本端点后端开关（/api/bridge/fs/workcopy） |
 
 ### 7.3 网页版前端（static/js/core.js，localStorage）
 
@@ -621,6 +653,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 | `ENABLE_TOOLSMITH` / `ENABLE_TOOL_DOCTOR` | True | 自研工具/工具医生 |
 | `ENABLE_AUTO_DRIFT` / `auto_drift_interval_min` / `auto_drift_on_exit` | True / 30 / True | 自动漂移（前端仅保存配置；实际推送由桌面端 `gui.py` 周期任务执行） |
 | `ENABLE_AUDIT_LOG` / `ENABLE_FILE_PARTITION` / `ENABLE_BROWSER_CTL` / `ENABLE_EXE_JOURNAL` | True | 审计/分区/CDP/自动化记录（前端保存配置；实际执行在桌面端，网页版工具 defs 无对应工具） |
+| `ENABLE_USER_FILE_PROTECT` / `ENABLE_WORK_COPY` | True | 用户资产禁写（前端同源后缀表）+ 工作副本工具（v8.26，经 /api/bridge/fs/workcopy） |
 | `ENABLE_TRACE_ADVANCED` | True | 轨迹高级能力 |
 | `ENABLE_VOICE_ASSISTANT` | False | 语音助手「小龙」2.0 |
 | `builtin_sprite` | blob | 浮层形象：blob/cat/robot/axolotl |
@@ -637,6 +670,7 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 - API Key 仅存本机 `data/config.json`；快照/导出不含明文密钥（`to_public()` 统一掩码，排除六字段：api_key/sync_password/sync_token/drift_api_key/search_api_key/dashscope_api_key）。
 - 命令/文件仅限工作区内（`resolve()` 防 `../` 越界）；工作区=项目根时保护系统目录与 `config.json`、`Err.log`；删除工作区根一律拒绝。
 - AI 删除文件默认禁止；命令执行默认需审批；关机/休眠需显式授权。
+- 用户资产（PPT/Excel/Word/PDF 等）AI 禁改原件：拒绝写/删/命令触碰，并引导经审批用 copy_user_asset 生成 workcopy/ 工作副本后处理副本（v8.26 语义：禁碰=拷贝出去改，原内容永不修改）。
 - 错误统一写根目录 `Err.log`（自动存错机制，5MB 轮转 + 对外只读末尾 1MB）；防呆库自动记录工具失败镜像。
 - 聊天区 HTML 一律转义渲染；Mermaid/HTML 预览仅样式化源码呈现，不执行脚本。
 - QThread 保活与有界等待：临时 QThread 注册模块级集合防 GC，退出路径 `wait()` 有上限（2.5s）。

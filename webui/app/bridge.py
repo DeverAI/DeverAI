@@ -19,11 +19,11 @@ from collections import deque
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from .auth import current_user
 from .config import get_config, update_config, DATA_DIR
-from .storage import save_text, load_json, save_json
+from .storage import save_text, load_json, save_json, sniff_crlf
 from .codename import workspace_codename
 from .errors import log_error
 from . import security
@@ -571,6 +571,19 @@ async def run_command(body: dict, user: dict = Depends(current_user)):
     #（前端审批卡确认后置 danger_ok=true；裸调 API 的破坏性命令被拦截）
     if security.is_dangerous_cmd(cmd) and not _strict_bool(body.get("danger_ok")):
         raise HTTPException(403, "危险命令需用户在界面确认后执行")
+    # v8.25 用户文件保护：命令触碰PPT/Excel/Word/PDF等用户资产直接拦截（防AI覆盖用户修改）
+    try:
+        from pyqt.desktop import file_protect as _fp
+        _hits = _fp.command_touches_user_asset(cmd, str(_workspace()))
+        if _hits:
+            raise HTTPException(403, "[用户文件保护] 命令涉及用户手工资产（"
+                                + "、".join(_hits[:5])
+                                + "），AI不允许执行。请先一键备份完整工作区，并由用户手动执行；"
+                                  "如确需AI执行，请用户备份后带danger_ok明确授权。")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     cwd = _workspace()
     rel = str(body.get("cwd") or "")
     if rel:
@@ -880,6 +893,16 @@ async def fs_write(body: dict, user: dict = Depends(current_user)):
     p = _resolve(rel)
     if _is_protected(p, _workspace()):
         raise HTTPException(403, "该文件属于系统受保护文件，禁止写入")
+    # v8.25 用户文件保护：用户资产（PPT/Excel/PDF等）AI禁写
+    try:
+        from pyqt.desktop import file_protect as _fp
+        _reason = _fp.check_ai_write_block(str(_workspace()), rel)
+        if _reason:
+            raise HTTPException(403, _reason)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     content = str(body.get("content") or "")
     # v6.2 P2-3：写入大小上限，防撑满磁盘
     if len(content.encode("utf-8", errors="ignore")) > _MAX_WRITE_SIZE:
@@ -887,8 +910,37 @@ async def fs_write(body: dict, user: dict = Depends(current_user)):
     if p.is_dir():
         raise HTTPException(400, "path 是目录")  # P2-10（查修）：目录写 400，与 lite 版一致
     p.parent.mkdir(parents=True, exist_ok=True)
-    save_text(p, content)
+    # v8.26 行尾保持（对齐桌面 sniff_crlf 纪律）：既有文件按原行尾风格写回，新文件原样
+    save_text(p, content, crlf=sniff_crlf(p))
     return {"ok": True}
+
+
+@router.post("/fs/workcopy")
+async def fs_workcopy(body: dict, user: dict = Depends(current_user)):
+    """v8.26 工作副本：把工作区文件拷贝为 workcopy/ 副本（原文件不动）。
+
+    「AI 禁碰用户资产」的合法出口：禁碰=拷贝出去改。命名按「时间-作者-内容」。
+    """
+    _readonly_block(user)
+    # v8.26 阶段3：后端强制开关（FreqErr「后端不强制前端开关」——前端裁剪只是 UX）
+    if not get_config().enable_work_copy:
+        raise HTTPException(403, "工作副本未开启（enable_work_copy）")
+    rel = str(body.get("path") or "").strip()
+    if not rel or rel in (".", "\\", "/"):
+        raise HTTPException(400, "path 不能为空或指向工作区根目录")
+    p = _resolve(rel)
+    if _is_protected(p, _workspace()):
+        raise HTTPException(403, "该文件属于系统受保护文件，禁止读取")
+    try:
+        from pyqt.desktop import file_protect as _fp
+    except Exception as e:
+        log_error("[web] file_protect 导入失败", e)
+        raise HTTPException(501, "当前环境不支持工作副本功能")
+    actor = str(body.get("actor") or "AI")[:20]
+    ok, info = await asyncio.to_thread(_fp.make_workcopy, str(_workspace()), rel, actor)
+    if not ok:
+        raise HTTPException(400, str(info))
+    return {"ok": True, "copy": info["rel"], "src": info["src"]}
 
 
 @router.post("/fs/mkdir")
@@ -926,6 +978,16 @@ async def fs_delete(body: dict, user: dict = Depends(current_user)):
         raise HTTPException(403, "该文件属于系统受保护文件，禁止删除")
     if not p.exists():
         raise HTTPException(404, "不存在")
+    # v8.25 用户文件保护：用户资产AI禁删（请用户手动处理或走隔离）
+    try:
+        from pyqt.desktop import file_protect as _fp
+        _reason = _fp.check_ai_write_block(str(_workspace()), str(body.get("path", "")))
+        if _reason:
+            raise HTTPException(403, _reason + "删除同样被禁止。")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     def _delete() -> None:
         try:
@@ -1042,7 +1104,7 @@ async def app_screenshot(body: dict, user: dict = Depends(current_user)):
 
 
 @router.get("/fs/image")
-async def fs_image(path: str = "", user: dict = Depends(current_user)):
+async def fs_image(path: str = "", raw: bool = False, user: dict = Depends(current_user)):
     """读取工作区图片为 base64（供浏览器端 ui_review 构造多模态请求）。限 3MB。
 
     按文件头魔数判定真实格式（PNG/JPEG），防止任意文件借"图片"名义外发；非图片 415。
@@ -1065,12 +1127,25 @@ async def fs_image(path: str = "", user: dict = Depends(current_user)):
         data = p.read_bytes()
     except OSError:
         raise HTTPException(500, "读取图片失败")
+    # v8.29：raw=1 直接回图片字节（变更栏引用卡片 <img>/lightbox 直链）；
+    # raw 模式扩展 GIF/WebP/BMP 魔数（IMG_EXT 全集），JSON 模式维持 PNG/JPEG 契约。
     head = data[:4]
+    mime = ""
     if head[:4] == b"\x89PNG":
         mime = "image/png"
     elif head[:3] == b"\xff\xd8\xff":
         mime = "image/jpeg"
-    else:
+    elif head[:3] == b"GIF":
+        mime = "image/gif"
+    elif head[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        mime = "image/webp"
+    elif head[:2] == b"BM":
+        mime = "image/bmp"
+    if not mime:
+        raise HTTPException(415, "不是有效的 PNG/JPEG 图片，无法用于视觉审查")
+    if raw:
+        return Response(content=data, media_type=mime)
+    if mime not in ("image/png", "image/jpeg"):
         raise HTTPException(415, "不是有效的 PNG/JPEG 图片，无法用于视觉审查")
     return {"ok": True, "base64": base64.b64encode(data).decode("ascii"),
             "mime": mime, "name": p.name}
@@ -1681,7 +1756,7 @@ async def toolsmith_build(body: dict, request: Request, user: dict = Depends(cur
         from pyqt.desktop.config import get_config as _get_desktop_cfg
         if not getattr(_get_desktop_cfg(), "ENABLE_TOOLSMITH", True):
             raise HTTPException(403, "自研工具库未开启（ENABLE_TOOLSMITH）。")
-        from desktop import toolsmith
+        from pyqt.desktop import toolsmith
         from pyqt.desktop.experts import finalize_tool_build
         cfg = await _desktop_cfg(body, request)
         dup = await asyncio.to_thread(toolsmith.dedup_report, requirement)
@@ -1718,7 +1793,7 @@ async def toolsmith_use(body: dict, request: Request, user: dict = Depends(curre
         from pyqt.desktop.config import get_config as _get_desktop_cfg
         if not getattr(_get_desktop_cfg(), "ENABLE_TOOLSMITH", True):
             raise HTTPException(403, "自研工具库未开启（ENABLE_TOOLSMITH）。")
-        from desktop import toolsmith
+        from pyqt.desktop import toolsmith
         cfg = await _desktop_cfg(body, request)
         r = await toolsmith.use_tool_with_feedback(cfg, name, inputs)
     except Exception as e:
@@ -1755,7 +1830,7 @@ async def toolsmith_fix(body: dict, request: Request, user: dict = Depends(curre
         from pyqt.desktop.config import get_config as _get_desktop_cfg
         if not getattr(_get_desktop_cfg(), "ENABLE_TOOL_DOCTOR", True):
             raise HTTPException(403, "工具医生未开启（ENABLE_TOOL_DOCTOR）。")
-        from desktop import toolsmith
+        from pyqt.desktop import toolsmith
         cfg = await _desktop_cfg(body, request)
         r = await toolsmith.fix_tool_bugs(cfg, limit=limit)
     except Exception as e:
@@ -1811,7 +1886,7 @@ async def assets_repair(body: dict, user: dict = Depends(current_user)):
         if not getattr(_get_desktop_cfg(), "ENABLE_VAULT", True):
             raise HTTPException(403, "资产银行未开启（ENABLE_VAULT）。")
         try:
-            from desktop import session_snap as _snap
+            from pyqt.desktop import session_snap as _snap
             if _snap.is_readonly():
                 raise HTTPException(423, "项目处于只读保护中，禁止修复资产")
         except HTTPException:

@@ -88,6 +88,34 @@ AGENT_SAFETY_RULES_WEB = """
 5. 轻量化：不引入非必要第三方库。
 """.strip()
 
+# v8.25 用户文件保护 + 非Git自动备份Worktree + 重名治理（桌面/网页共用语义，各端文案同步）
+USER_FILE_PROTECT_RULES = """
+【用户文件保护铁律（v8.25，必须遵守）】
+1. PPT/Excel/Word/PDF/压缩包/音视频等用户手工资产（.pptx/.xls/.doc/.pdf等）：一律视为"用户改过的成果"。
+   AI不允许用write_file/edit_file/delete_file直接写/覆盖/删除（文本工具会损坏二进制格式），也不允许用run_command执行触碰这些文件的命令（工具层会直接拦截并告诉你命中的文件名）。
+2. 用户一旦提到这类文件被改过，或工具返回[用户文件保护]拦截：立即停手，向用户说明"已保护未覆盖"，并建议"一键备份完整工作区"（backup_workspace工具 / 界面备份按钮），等用户明确授权+备份后，仍优先由用户手动处理。
+3. 非Git自动备份Worktree就是你的安全网（不依赖git/github）：write/edit前自动checkpoint快照（含二进制快照）、每轮session_snap整包、dep_tree校验、audit留痕。动重要文件前先查list_checkpoints/list_audits确认。
+4. 重名/命名不清治理：当list_dir/glob看到"副本/copy/(1)/新建/未命名/untitled/~$/bak/tmp"等多份疑似重复，或copilot/依赖树报警文件名奇怪时，必须调用scan_ambiguous_files扫描，并把分组结果摆给用户逐组识别（哪个保留、其余备份/转移），经用户确认后才调quarantine_files转移到backups/quarantine/<时间>/。禁止擅自删除重名文件。
+5. 禁碰语义（v8.26）＝"拷贝出去改"：用户资产的原文件永远不修改；确需处理其内容时，先向用户说明并征得同意，调用copy_user_asset把原文件拷贝为workcopy/下的工作副本（命名：时间-作者-内容，如20260905-AI-报告.pptx），之后只在副本上读写/执行（workcopy/内AI可自由操作），原文件保持不动。
+6. 新建文件命名规则（v8.26）：创建新文件优先沿用工作区已有命名惯例（先看同目录与资料文件）；无可依据的惯例时，按「时间-作者-内容」命名（如20260905-用户-实验报告.pptx；AI中间产物作者写AI）。
+""".strip()
+
+# v8.27 不看守模式（ENABLE_UNATTENDED / CLI --unattended / 服务器续算）：无人值守纪律
+UNATTENDED_RULES = """
+【不看守模式纪律（v8.27，当前无人值守，必须遵守）】
+1. 禁止向用户提问、禁止等待确认或授权：一切决策由你自行做出最合理判断并继续执行。
+2. 审批门为自动策略：非危险动作自动放行；危险动作会被跳过并记入工作区 unattended_progress.json 保留进度台账，不要反复重试同一危险动作。
+3. 能做的做完做扎实；做不了的（缺依赖/需授权/外部不可达）记录原因并跳过，继续其余任务。
+4. 最终汇报必须分两节：「已完成」与「未完成（原因）」——未完成项对应台账条目，便于有人接管后续处理。
+""".strip()
+
+# v8.28 换机/漂移环境提醒（drift 续算期间注入，双端普通适用）
+DRIFT_ENV_RULES = """
+【换机环境提醒（v8.28，算力漂移续算中）】
+本任务正跨机器续算（来自另一台机器的算力漂移）：依赖/路径/服务/外部程序等环境差异可能需要重新配置。
+动手前先验证环境（解释器与依赖版本、路径存在性、服务可达性）；因环境缺失做不了的步骤，如实说明并保留进度，不要假设环境与上一台机器一致。
+""".strip()
+
 
 @dataclass
 class AgentResult:
@@ -134,6 +162,7 @@ class Agent:
         self._artifacts: List[dict] = []
         self.output_text = ""
         self.tool_log: List[dict] = []
+        self._changes: List[dict] = []           # v8.29 变更栏：本轮文件改动采集
 
         if emit is not None:
             self.emit = emit
@@ -221,6 +250,19 @@ class Agent:
         # v6.3 决策52：AGENT.txt 安全规则注入（builder/experts/专家实例统一生效）
         if getattr(self.cfg, "ENABLE_SAFETY_RULES", True):
             parts.append(AGENT_SAFETY_RULES)
+        # v8.25 用户文件保护 + 重名治理（chat只读形态也需知晓，避免口头指导用户用AI覆盖）
+        if getattr(self.cfg, "ENABLE_USER_FILE_PROTECT", True):
+            parts.append(USER_FILE_PROTECT_RULES)
+        # v8.27 不看守模式纪律（CLI --unattended / 服务器续算强制）
+        if getattr(self.cfg, "ENABLE_UNATTENDED", False):
+            parts.append(UNATTENDED_RULES)
+        # v8.28 换机/漂移环境提醒：漂移状态下继续任务时环境可能需要重配
+        try:
+            from . import drift as _drift_mod
+            if _drift_mod.is_drifting():
+                parts.append(DRIFT_ENV_RULES)
+        except Exception:
+            pass
         # v8.4 UI 自截图确认纪律：制造本地 GUI 后必须截图自检（chat 形态只读不注入）
         if (getattr(self.cfg, "ENABLE_APP_SHOT", True)
                 or getattr(self.cfg, "ENABLE_UI_REVIEW", True)) and mode != "chat":
@@ -269,6 +311,7 @@ class Agent:
         self._artifacts = []
         self._loop = asyncio.get_running_loop()  # v8.14：cancel() 线程安全用
         self._todo_text = user_message  # v5: 工具裁剪依据
+        self._changes = []                       # v8.29 变更栏每轮重置
         # 主对话：解析主模型注册表条目（独立 url/api_key 生效 + 空/无效回退第一个 chat 模型）
         if not self.expert_id and not self.is_sub:
             try:
@@ -379,6 +422,9 @@ class Agent:
                     await self._emit({"type": "guard", "ok": g["ok"], "note": g["note"]})
             except Exception:
                 pass
+        # v8.29 变更栏：本轮文件改动一次性渲染（专家/子Agent 的 file_changes 经 xemit 透传主 UI）
+        if self._changes:
+            await self._emit({"type": "file_changes", "changes": list(self._changes[-50:])})
         await self._emit({"type": "run_done", "result": result.__dict__})
         return result
 
@@ -637,6 +683,19 @@ class Agent:
                     }
                 )
 
+            # v8.29 变更栏采集：文件类工具成功后登记本轮改动（run 结束时 file_changes 事件渲染；
+            # 与网页版 agent.js 采集同语义——相邻重复 (path, action) 去重）
+            try:
+                if name in ("write_file", "edit_file", "delete_file", "copy_user_asset") \
+                        and result.get("ok"):
+                    _meta = result.get("meta", {}) or {}
+                    _rel = str(_meta.get("path") or _meta.get("copy") or args.get("path") or "")
+                    if _rel:
+                        _last = self._changes[-1] if self._changes else None
+                        if not _last or _last.get("path") != _rel or _last.get("action") != name:
+                            self._changes.append({"path": _rel.replace("\\", "/"), "action": name})
+            except Exception:
+                pass
             raw_output = result.get("output", "")
             self.tool_log.append(
                 {"call_id": call_id, "name": name, "args": args, "ok": result.get("ok", False)}

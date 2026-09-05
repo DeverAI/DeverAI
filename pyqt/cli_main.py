@@ -262,9 +262,13 @@ class CliSession:
         return result
 
 
-async def _session_loop(cfg: Config, no_color: bool) -> None:
+async def _session_loop(cfg: Config, no_color: bool, initial_history: list = None) -> None:
     sess = CliSession(cfg, no_color)
-    print(f"{C.BOLD}DeverAI CLI{C.RST} — 模型 {cfg.model} · 工作区 {cfg.workspace}")
+    if initial_history:
+        # v8.27 --from-drift：以服务器素材化快照中的会话历史续跑（同一会话跨机接力）
+        sess.history = list(initial_history)[-200:]
+    print(f"{C.BOLD}DeverAI CLI{C.RST} — 模型 {cfg.model} · 工作区 {cfg.workspace}"
+          + (" · 不看守模式" if getattr(cfg, "ENABLE_UNATTENDED", False) else ""))
     print("输入 /help 查看命令；Ctrl+D 退出。")
     while True:
         try:
@@ -317,6 +321,12 @@ def main() -> int:
     parser.add_argument("--workspace", default="", help="覆盖工作区路径")
     parser.add_argument("--mode", default="", help="启动形态 builder|chat|experts")
     parser.add_argument("--no-color", action="store_true", help="禁用 ANSI 颜色")
+    parser.add_argument("--unattended", action="store_true",
+                        help="v8.27 不看守模式：禁提问，非危险动作自动放行，危险动作跳过记台账")
+    parser.add_argument("--preset", default="",
+                        help="v8.28 Agent+ 模式预设（unattended=无人值守 / daily=日常）")
+    parser.add_argument("--from-drift", metavar="DIR", default="",
+                        help="v8.27 从算力漂移素材化目录续算（读 snapshot 历史 + keys.enc 密钥信封）")
     args = parser.parse_args()
 
     cfg = get_config()
@@ -329,13 +339,107 @@ def main() -> int:
     elif args.mode:
         print(f"未知形态 {args.mode}（builder|chat|experts）", file=sys.stderr)
         return 2
+    if args.preset:
+        # v8.28 Agent+ 模式预设。v8.29 修序：先套预设、--unattended 显式标志后置——
+        # 原实现 --unattended 先置位后，daily 预设 dataclasses.replace 会把
+        # ENABLE_UNATTENDED 重置回 False，显式标志被静默吃掉（与注释宣称相反）。
+        from desktop.config import AGENT_PRESETS, apply_agent_preset
+        if args.preset in AGENT_PRESETS:
+            cfg = apply_agent_preset(cfg, args.preset)
+            print(f"[预设] 已应用 Agent+ 预设: {args.preset}（{AGENT_PRESETS[args.preset]['desc']}）")
+        else:
+            print(f"未知预设 {args.preset}（可选: {', '.join(AGENT_PRESETS)}）", file=sys.stderr)
+            return 2
+    if args.unattended:
+        cfg.ENABLE_UNATTENDED = True
+
+    initial_history = None
+    if args.from_drift:
+        import getpass
+        import shutil as _sh
+        from desktop.sync import import_snapshot_bytes, import_keys_envelope
+        d = Path(args.from_drift)
+        # v8.27 阶段3：缺省工作区 = 素材化 workspace/——防止缺省回退到服务器仓库根，
+        # 叠加 --unattended 后续算 AI 直接改服务器代码
+        if not args.workspace:
+            ws_default = d / "workspace"
+            if not ws_default.is_dir():
+                print(f"漂移目录缺少 workspace/（{ws_default}）——请用 --workspace 显式指定。",
+                      file=sys.stderr)
+                return 2
+            cfg.workspace = str(ws_default)
+        snap_path = d / "snapshot"
+        if not snap_path.is_file():
+            print(f"漂移目录缺少 snapshot：{snap_path}", file=sys.stderr)
+            return 2
+        text = snap_path.read_text(encoding="utf-8", errors="replace")
+        pw = getpass.getpass("同步口令（sync_password，用于解密快照与密钥信封，可直接回车跳过）: ")
+        payload = {}
+        try:
+            payload = import_snapshot_bytes(text, pw)
+        except Exception:
+            try:
+                payload = import_snapshot_bytes(text, "")
+            except Exception as e:
+                print(f"快照解包失败: {e}", file=sys.stderr)
+                return 2
+        hist = payload.get("history")
+        if isinstance(hist, list) and hist:
+            initial_history = hist
+            print(f"[漂移续算] 已载入服务器会话历史 {len(hist)} 条。")
+        # 快照内非敏感配置接力（model/参数/形态；--model 显式覆盖优先）
+        snap_cfg = payload.get("config") or {}
+        if isinstance(snap_cfg, dict):
+            for k in ("temperature", "max_tokens", "agent_mode"):
+                if snap_cfg.get(k) not in (None, ""):
+                    try:
+                        setattr(cfg, k, snap_cfg[k])
+                    except Exception:
+                        pass
+        # 密钥信封：仅解密到内存（不落盘）；无信封时走服务器本地 drift_api_key 兜底
+        keys_path = d / "keys.enc"
+        if keys_path.is_file():
+            try:
+                keys = import_keys_envelope(keys_path.read_text(encoding="utf-8"), pw)
+                for k, v in (keys or {}).items():
+                    if v:
+                        setattr(cfg, k, v)
+                print("[漂移续算] 密钥信封已解密到内存（不落盘）。")
+            except Exception as e:
+                print(f"[漂移续算] 密钥信封解密失败（{e}），将尝试服务器本地 LLM 配置。",
+                      file=sys.stderr)
+        else:
+            print("[漂移续算] 无密钥信封，使用服务器本地 LLM 配置（drift_api_key / data/config.json）。")
+        # data 位素材消费（裁决③）：WorkTree/记忆/设置同步到服务器普通端对应 data 位
+        src_data = d / "data"
+        if src_data.is_dir():
+            copied = 0
+            for name in ("agent_memory.json", "file_protect.json", "term_envs.json",
+                         "audit.jsonl", "drift_state.json"):
+                p = src_data / name
+                if p.is_file():
+                    try:
+                        _sh.copy2(p, DATA_DIR / name)
+                        copied += 1
+                    except OSError:
+                        pass
+            for sub in ("checkpoints", "workspaces"):
+                sd = src_data / sub
+                if sd.is_dir():
+                    try:
+                        _sh.copytree(sd, DATA_DIR / sub, dirs_exist_ok=True)
+                        copied += 1
+                    except OSError:
+                        pass
+            if copied:
+                print(f"[漂移续算] 素材化 data 位已合并到 {DATA_DIR}（{copied} 项）。")
 
     if not cfg.api_key:
         print("未配置 API Key（data/config.json）。请先运行桌面版并在设置中填写，"
               "或用 --model 覆盖；当前为空将无法调用模型。", file=sys.stderr)
 
     try:
-        asyncio.run(_session_loop(cfg, args.no_color))
+        asyncio.run(_session_loop(cfg, args.no_color, initial_history))
     except KeyboardInterrupt:
         print()
     return 0

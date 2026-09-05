@@ -184,6 +184,12 @@ async function saveActiveTab() {
   } else {
     return;
   }
+  // v8.26 两端统一 WorkTree 保护：保存前先快照磁盘原文件（source=human，与桌面对齐）。
+  // 不设 dirty 条件——外部程序改过磁盘而标签未 dirty 时同样兜底；后端直读，幂等低成本。
+  await api('/api/bridge/checkpoint/save', {
+    method: 'POST',
+    body: { path: Editor.active, content: '', source: 'human' },
+  }).catch(() => toast('保存前快照失败（已继续保存，本次无版本快照）', 'err'));
   try {
     await writeFile(Editor.active, content);
     const t = Editor.tabs.find((x) => x.rel === Editor.active);
@@ -275,4 +281,11 @@ function renderTabbar() {
     };
     bar.appendChild(tab);
   });
+  // v8.26 两端统一：编辑器内版本历史入口（复用 chat.js openVersionDialog /checkpoint/versions）
+  if (Editor.active && typeof openVersionDialog === 'function') {
+    const hist = el('span', 'tab tab-hist', '历史');
+    hist.title = '查看/恢复该文件的版本快照（WorkTree）';
+    hist.onclick = () => openVersionDialog(Editor.active);
+    bar.appendChild(hist);
+  }
 }

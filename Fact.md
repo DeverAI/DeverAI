@@ -122,3 +122,44 @@
   按 Design §2.3/§6.8 契约补建 sync_server.py 完整版（/push /pull /chat /drift/* /cmd/* + HTML
   / 与 /chat/page + SYNC_TOKEN 鉴权），v8.19「加注记而非补文件」裁决就此作废；README.md 同轮补建
   （Design §9 要求的首要入口文档，此前因跨机器差异缺失）。
+- [2026-09-05 v8.25/v8.26 用户资产与编辑器裁决] ①AI 禁碰语义=拷贝（用户原话「AI禁止碰不是不能碰，而是拷贝，
+  原内容不修改，我们直接拷贝到其他地方干」）→ 用户资产硬拦截升级为拦截+引导 copy_user_asset 生成 workcopy/
+  工作副本（审批门 + 开关 ENABLE_WORK_COPY），原文件永不修改，workcopy/ 内 AI 副本豁免保护；Lite/DSH 插件不接
+  （用户明示）。②编辑器落点：用户裁决「DeverAI两端（Python+Web）两端统一」——桌面与网页编辑器统一 WorkTree
+  保护语义（保存前快照 source=human、编辑器内版本历史入口、行尾保持），Lite 与 DSH 插件明确不加。③新建文件
+  命名规则：优先找资料沿用工作区已有命名惯例；无惯例按「时间-作者-内容」（用户交付物作者=用户，AI 中间产物
+  作者=AI）。④PPT 参考库&知识库：Mavis 侧固定库+技能先行落地（用户允许的 PPT 导出 PNG 入库，做 PPT 任务先圈
+  PNG 再拷相关切片进上下文）；DeverAI 资产银行扩展模块入 Future.md 下轮做。⑤「未选择工作区」会话不把代码/
+  过程摔桌面——Mavis 侧行为规则，已记 user memory；DeverAI 侧 workspace 默认 APP_DIR 行为不变。
+- [2026-09-05 版本事实] 当天实际两轮：上午 v8.25 交付整治（dev_log/20250905.md 已记），下午 v8.25 用户文件
+  保护（file_protect 四端接线，此前漏记 dev_log，v8.26 轮补记 dev_log/20250905_v825b.md）。本轮 v8.26 编辑器
+  统一 + 工作副本，index.html ?v= 统一 bump 8.26.0。
+- [2026-09-05 v8.26 存量缺陷修复与遗留] v8.26 冒烟实证：webui 服务进程内 `desktop` 别名不可导入
+  （bridge.py:35 _REPO_ROOT 只保证 `pyqt.desktop` 形式），v8.25 接线的用户资产拦截在 webui 端实为死代码
+  （写放行、命令不拦）。本轮已修 WorkTree/资产保护链路 8 处（bridge file_protect×4 + session_snap×1、
+  snap_bridge checkpoint/file_protect×2、snap_util×1），webui 拦截与 /checkpoint/*、workcopy 全部实证恢复。
+  **遗留待修 4 处同类死导入**（非 WorkTree 链路，激活前需先解决 desktop.config 不认 DEVERAI_DATA_DIR 的
+  数据目录隔离问题，避免冒烟/多实例污染真实 pyqt/data）：meta_bridge.py models/matcher/auto_score×3、
+  proxy.py models×1（toolsmith×3 已在阶段3 一并修复并复验）。
+- [2026-09-05 v8.27 真·算力漂移四项裁决] ①密钥随漂移加密上自有服务器（用户原话「密钥的话还是同样传上服务器，
+  但得找办法加密……MQTT肯定是不行的」）→ 复用 sync_password PBKDF2 派生 + AES-GCM 信封，服务器仅存密文
+  （keys_enc 不透明串），续算时凭口令解密到内存不落盘；安全红线「API Key 仅本机」就此修订为「本机明文、
+  自有服务器仅密文信封」。②不看守模式（用户原话「不使用提问工具、审批工具，能做的做完，没做完的保留进度」）
+  → agent_unattended：审批门自动策略（非危险放行/危险跳过记账）+ 工作区 unattended_progress.json 台账随快照
+  往返。③会话迁移=轮边界断点上传，服务器以普通端 CLI 续同一会话；工作区素材化到 APPDATA
+  （%LOCALAPPDATA%\DeverAI\drift\<项目号>\workspace，SYNC_WS_DIR 可覆盖），WorkTree/记忆/设置同步到对应
+  data 位（绝不放工作区内）。④退出上传模式 drift_upload_mode（最简=WorkTree 即时变更增量 / 完整=全工作区
+  +data 子集），漂移退出对话框选一次即记住、以后不再询问，设置页可改。
+- [2026-09-05 v8.28 六项裁决] ①备份范围控制：C 盘爆红 → checkpoint 每文件保留版本数改为可配（默认上两版），
+  WorkTree 的 Copilot 拦截危险操作等安全语义不变。②上传/换机时把「环境可能需要重配」注入 AI 上下文（drift
+  续算状态自动注入）。③任务结束末尾要变更栏，AI 引用文件可选形式：HTML=预览/源码（源码默认折叠、可展开可
+  复制、不直接展开）或仅文件；客户端配置自动上云漂移时提示词告知 AI：用户不能预览文件，必须用引用形式交付。
+  多图引用=微信式扑克牌压缩叠放、悬停距离驱动排斥位移、点击放大。④Agent+ 模式预设（无人值守即一种预设，
+  目的=让 AI 把能干的活先干完）。⑤上传文件功能：本轮只出方案未实现（见对话/ Future.md）。⑥变更栏与引用
+  卡片本轮落地网页端；桌面端变更栏 UI 排下一轮（桌面既有「打开文件」路径可用）。
+- [2026-09-05 v8.30 上传功能裁决] 用户拍板 Future.md 三选一之**方案1**（桌面拖拽入工作区），并要求支持
+  「输入框粘贴文件、文件拖动进入」。落地：窗口级拖放 + 输入框 Ctrl+V（文件/剪贴板图片）→
+  uploads/<ts>-user/（uploads_ingest.py：敏感名拒绝、512MB 上限、同名加序号）→ 自动挂引用条
+  （指针式引用，AI read_file 读取）；checkpoint 跳过 uploads/ 前缀（C 盘约束，session_snap 整包/
+  一键备份仍覆盖）。远程端追问裁决：手机/云端文件走漂移反向带回（方案3 既有通道），网页端受控
+  上传=方案2 另行立项（攻击面单独审）。桌面变更栏与引用卡片已在 v8.29 补齐（⑥兑现）。

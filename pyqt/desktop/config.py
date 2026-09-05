@@ -90,6 +90,8 @@ class Config:
     ENABLE_SESSION_SNAP: bool = True     # v8.3: 一轮对话任务级快照（标题+工作区压缩）
     session_snapshot_max_mb: int = 3072  # v8.3: 快照总上限 MB（默认 3G），超限淘汰最旧
     round_keep_rollback: int = 2         # v8.3: 轮内保留工具调用前回退次数
+    checkpoint_keep_per_file: int = 2    # v8.28: 每文件保留 checkpoint 版本数（C盘友好，默认上两版）
+    agent_preset: str = ""               # v8.28: Agent+ 模式预设名（空=自定义；unattended/daily）
     tree_update_at_round_end: bool = True  # v8.3: 依赖树&完整快照在回合结束时更新（False=开始时）
     ai_decision_delay_s: int = 0         # v8.3: 默认问答延迟（秒，0=AI 立即决策）
     ENABLE_DEP_TREE: bool = True         # v8.3: 依赖树自动扫描+校验
@@ -123,6 +125,14 @@ class Config:
     ENABLE_VOICE_ASSISTANT: bool = False  # v1.0.0: 语音助手「小龙」（关闭即隐藏入口、不注册 RPC）
     ENABLE_INTEGRITY: bool = True        # v1.1.0: DeveraiIntegrityService 完整性校验（HKDF + HMAC-SHA256）
 
+    # ---- 用户文件保护 + 非Git自动备份Worktree增强（v8.25）----
+    ENABLE_USER_FILE_PROTECT: bool = True  # v8.25: PPT/Excel/Word/PDF等用户资产：AI禁写禁命令触碰
+    ENABLE_FULL_BACKUP: bool = True        # v8.25: 一键备份完整工作区（backups/<ts>_full.zip）
+    ENABLE_AMBIGUOUS_GUARD: bool = True    # v8.25: 重名/命名不清自动要求识别、备份/转移
+    ENABLE_WORK_COPY: bool = True          # v8.26: 工作副本（copy_user_asset，禁碰=拷贝出去改，原文件不动）
+    # ---- 真·算力漂移（v8.27）----
+    ENABLE_UNATTENDED: bool = False        # v8.27: 不看守模式（禁提问；非危险自动放行，危险跳过记保留进度台账）
+    drift_upload_mode: str = ""            # v8.27: 漂移上传模式（空=退出时询问；minimal/full 记住后不再问）
     # ---- Agent 形态（v4）----
     agent_mode: str = "builder"         # chat | builder | experts
     expert_model: str = ""              # 守门/守护用的轻量模型（空=主模型）
@@ -170,6 +180,29 @@ class Config:
         d["drift_api_key"] = "***" if d.get("drift_api_key") else ""
         d["dashscope_api_key"] = "***" if d.get("dashscope_api_key") else ""
         return d
+
+
+# ---- v8.28 Agent+ 模式预设（一组开关的组合；目的：让 AI 把能干的活先干完）----
+AGENT_PRESETS = {
+    "unattended": {
+        "desc": "无人值守：禁提问，非危险动作自动放行，危险跳过记保留进度台账——把能干的活先干完",
+        "flags": {"ENABLE_UNATTENDED": True, "agent_mode": "builder"},
+    },
+    "daily": {
+        "desc": "日常值守：恢复默认审批与 diff 预览行为",
+        "flags": {"ENABLE_UNATTENDED": False},
+    },
+}
+
+
+def apply_agent_preset(cfg, name: str):
+    """v8.28：应用 Agent+ 模式预设（返回新 cfg，不改原对象）。未知预设原样返回。"""
+    from dataclasses import replace as _replace
+    p = AGENT_PRESETS.get(str(name or "").strip())
+    if not p:
+        return cfg
+    kwargs = {k: v for k, v in p.get("flags", {}).items() if hasattr(cfg, k)}
+    return _replace(cfg, **kwargs)
 
 
 _cfg: Config = None

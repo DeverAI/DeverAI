@@ -10,7 +10,13 @@ def apply_expert_report(rid: str, rel: str, deps: list, min_size: int) -> tuple:
     if not rid:
         return False, "无激活轮次"
     try:
-        from desktop import session_snap, dep_tree
+        # v8.26 修复：desktop 别名不存在（sys.path 只有 repo 根），一律走 pyqt.desktop
+        import sys as _sys
+        from pathlib import Path as _P
+        _root = _P(__file__).resolve().parent.parent.parent
+        if str(_root) not in _sys.path:
+            _sys.path.insert(0, str(_root))
+        from pyqt.desktop import session_snap, dep_tree
         with session_snap._META_LOCK:
             m = session_snap._load_meta(rid)
             tree = m.get("tree") or {}

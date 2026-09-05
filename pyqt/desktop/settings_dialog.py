@@ -60,6 +60,11 @@ SWITCHES = [
     ("ENABLE_BROWSER_DEVTOOLS", "F12 开发者工具（Networks/Storage/Console/Sources 面板，查找 API 端点）"),
     ("ENABLE_EXE_JOURNAL", "外部软件探索记录（每次 exe 操作写入 journal）"),
     ("ENABLE_TOOL_DOCTOR", "工具医生（bug 收集与自动修复回归）"),
+    ("ENABLE_USER_FILE_PROTECT", "用户文件保护（PPT/Excel/Word/PDF等用户改过的文件AI禁写禁命令）"),
+    ("ENABLE_FULL_BACKUP", "一键备份完整工作区（backups/<时间>_full.zip）"),
+    ("ENABLE_AMBIGUOUS_GUARD", "重名/命名不清治理（copilot+worktree发现即要求识别备份转移）"),
+    ("ENABLE_WORK_COPY", "工作副本（禁碰=拷贝出去改：copy_user_asset 拷贝用户资产到 workcopy/，原文件不动）"),
+    ("ENABLE_UNATTENDED", "不看守模式（禁提问；非危险动作自动放行，危险动作跳过并记入保留进度台账）"),
 ]
 
 # v8.5.6：参考图内置专家与技能（卡片式展示）

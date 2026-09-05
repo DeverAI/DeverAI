@@ -65,7 +65,7 @@ DRIFT_PATH = DATA_DIR / "drift_state.json"
 NODE_TTL_S = 120          # 节点注册表 TTL 2 分钟
 RESULT_TTL_S = 600        # 命令结果 TTL 10 分钟
 CMD_QUEUE_MAX = 100       # 每节点命令队列上限
-PUSH_MAX_BYTES = 64 * 1024 * 1024    # /push 体上限 64MB
+PUSH_MAX_BYTES = 192 * 1024 * 1024   # /push 体上限 192MB（v8.27：含 base64 工作区/data 包，原始预算约 144MB）
 RESULT_MAX_BYTES = 1024 * 1024       # /cmd/result 体上限 1MB
 BODY_MAX_BYTES = 2 * 1024 * 1024     # 其余请求体上限 2MB
 CHAT_MSG_MAX = 16000      # 单条续聊消息长度上限
@@ -287,23 +287,162 @@ async def _gate_middleware(request: Request, call_next):
 
 # ----------------------------- 快照存取 -----------------------------
 
+# ---------------- v8.27 真·算力漂移：工作区素材化（APPDATA 落位） ----------------
+# 工作区/数据落位目录：Windows 默认 %LOCALAPPDATA%\DeverAI\drift，可用 SYNC_WS_DIR 覆盖。
+# WorkTree/记忆/设置等 AI 不可乱动数据放对应 data 位，绝不入工作区（与桌面 workspace_config 约束一致）。
+DRIFT_WS_DIR = Path(os.environ.get("SYNC_WS_DIR") or (
+    (Path(os.environ["LOCALAPPDATA"]) if os.environ.get("LOCALAPPDATA") else Path.home())
+    / "DeverAI" / "drift"))
+
+_DRIFT_DATA_FILES = ("audit.jsonl", "agent_memory.json", "file_protect.json",
+                     "term_envs.json", "drift_state.json")
+
+
+def _safe_extract_zip(b64_text: str, dest: Path) -> int:
+    """v8.27：解 b64 zip 到 dest（防 zip-slip：拒绝绝对路径/.. 穿越/逃出目标目录）。
+
+    阶段3 加固：解压总量上限 256MB（防 zip 炸弹撑爆磁盘/OOM），分块流式写盘。
+    返回文件数。
+    """
+    import base64 as _b64
+    import zipfile as _zipf
+    import io as _io
+    raw = _b64.standard_b64decode(str(b64_text or ""))
+    dest_res = dest.resolve()
+    n = 0
+    total = 0
+    cap_total = 256 * 1024 * 1024
+    with _zipf.ZipFile(_io.BytesIO(raw)) as zf:
+        aborted = False
+        for m in zf.infolist():
+            if aborted:
+                break
+            name = str(m.filename or "").replace("\\", "/")
+            if not name or name.startswith("/") or ".." in name.split("/"):
+                continue
+            target = (dest_res / name).resolve()
+            if not str(target).startswith(str(dest_res)):
+                continue
+            if m.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(m) as src, open(target, "wb") as out:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    total += len(chunk)
+                    if total > cap_total:
+                        # 阶段3：按实际写出量判超帽（不信任 zip 声明头），中断并清半截文件
+                        aborted = True
+                        break
+            if aborted:
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                break
+            n += 1
+    return n
+
+
+def _materialize_drift(pid: str, keys_enc: str, ws_zip: str, data_zip: str,
+                       upload_mode: str, snapshot_text: str = "",
+                       ws_manifest: str = "") -> dict:
+    """v8.27：把推送的工作区/data 子集/密钥信封素材化到 APPDATA 对应位。
+
+    <DRIFT_WS_DIR>/<项目号>/workspace/  —— 普通端 CLI --workspace 直接指向
+    <DRIFT_WS_DIR>/<项目号>/data/      —— WorkTree/记忆/设置等（AI 不可乱动）
+    <DRIFT_WS_DIR>/<项目号>/keys.enc   —— 密钥信封仅密文，续算时凭 sync_password 解密到内存
+    <DRIFT_WS_DIR>/<项目号>/snapshot   —— 主快照原文（加密或冷备格式），续算端读取历史
+    同项目号重复推送即原地刷新；latest.txt 记录最新项目号。
+    阶段3：附 ws_manifest 时按客户端清单差集清理 workspace 僵尸文件（服务器以客户端为准，
+    minimal 增量不含删除语义，靠清单补齐）。
+    """
+    try:
+        DRIFT_WS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return {}
+    safe_pid = "".join(c for c in str(pid or "default") if c.isalnum() or c in "_-")[:64] \
+        or "default"
+    d = DRIFT_WS_DIR / safe_pid
+    out = {"dir": str(d)}
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        if snapshot_text:
+            _atomic_write(d / "snapshot", snapshot_text)
+            out["snapshot"] = str(d / "snapshot")
+        if ws_zip:
+            ws_dir = d / "workspace"
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            out["workspace"] = str(ws_dir)
+            out["workspace_files"] = _safe_extract_zip(ws_zip, ws_dir)
+        if ws_manifest:
+            ws_dir = d / "workspace"
+            if ws_dir.is_dir():
+                wanted = {x.strip().replace("\\", "/")
+                          for x in str(ws_manifest).splitlines() if x.strip()}
+                ws_res = ws_dir.resolve()
+                removed = 0
+                for p in ws_res.rglob("*"):
+                    try:
+                        if not p.is_file() or p.is_symlink():
+                            continue
+                        rel = str(p.relative_to(ws_res)).replace("\\", "/")
+                        if rel not in wanted:
+                            p.unlink()
+                            removed += 1
+                    except (OSError, ValueError):
+                        continue
+                out["removed_stale"] = removed
+        if data_zip:
+            data_dir = d / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out["data"] = str(data_dir)
+            out["data_files"] = _safe_extract_zip(data_zip, data_dir)
+        if keys_enc:
+            # 仅密文落盘；解密只发生在续算进程内存
+            _atomic_write(d / "keys.enc", keys_enc)
+            out["keys"] = "envelope"
+        out["upload_mode"] = str(upload_mode or "")
+        _atomic_write(d / "latest.txt", safe_pid)
+        _atomic_write(DRIFT_WS_DIR / "latest.txt", safe_pid)
+    except Exception:
+        return out
+    return out
+
+
 @app.post("/push")
 async def push(body: dict):
     """接收客户端快照。data=主快照（加密或无口令），cold=无口令冷备副本。
 
     保持入参格式原样写回（决策106）；与 /chat 的文件写互斥（决策79）。
+    v8.27 真·算力漂移：附 ws_zip/data_zip 时素材化到 APPDATA 对应位（工作区+数据子集），
+    keys_enc 为密钥信封（仅密文落盘，续算端解密到内存）；pid=项目号（素材化目录名）。
     """
     data = str(body.get("data") or "")
     cold = str(body.get("cold") or "")
     if not data:
         raise HTTPException(400, "缺少 data 字段（主快照）。")
     now = _now()
+    mat = {}
+    try:
+        # 阶段3：素材化是磁盘 IO（可能解压数十 MB），移出事件循环防阻塞 /chat
+        mat = await asyncio.to_thread(
+            _materialize_drift, str(body.get("pid") or ""),
+            str(body.get("keys_enc") or ""), str(body.get("ws_zip") or ""),
+            str(body.get("data_zip") or ""), str(body.get("upload_mode") or ""),
+            data, str(body.get("ws_manifest") or ""))
+    except Exception:
+        mat = {}
     async with _CHAT_LOCK:
         snap = {"data": data, "cold": cold, "updated_at": now}
         _atomic_write(SNAPSHOTS_PATH, json.dumps(snap, ensure_ascii=False))
         if cold:
             _atomic_write(COLD_PATH, cold)
-    return {"ok": True, "message": "已接收快照", "updated_at": now}
+    return {"ok": True, "message": "已接收快照", "updated_at": now, "materialized": mat}
 
 
 @app.get("/pull")
@@ -342,6 +481,13 @@ async def drift_status(project_id: str = Query(default="")):
         "active": bool(st.get("active", False)),
         "unacked_count": int(st.get("unacked_count", 0) or 0),
         "updated_at": str(st.get("updated_at") or ""),
+        # v8.27 真·算力漂移：素材化落位与续算指引（普通端 CLI 接力）
+        "drift_ws": {
+            "dir": str(DRIFT_WS_DIR),
+            "latest": _read_text(DRIFT_WS_DIR / "latest.txt").strip(),
+            "resume_hint": ("python pyqt/cli_main.py --workspace <dir>/workspace "
+                            "--from-drift <dir> --unattended"),
+        },
     }
 
 

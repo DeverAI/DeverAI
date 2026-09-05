@@ -82,7 +82,7 @@ def _set_active_round(user: dict, rid: str) -> None:
 def _desktop_modules():
     """延迟导入桌面模块（仅 Windows+桌面环境存在；失败给出明确错误）。"""
     try:
-        from desktop import checkpoint, session_snap, dep_tree
+        from pyqt.desktop import checkpoint, session_snap, dep_tree
         return checkpoint, session_snap, dep_tree
     except Exception as e:
         # P2-1：异常详情（含本机绝对路径）落 Err.log，对外只回泛化文案
@@ -657,3 +657,76 @@ async def tree_inject(user: dict = Depends(current_user)):
     rid = _active_round(user)
     inj = await asyncio.to_thread(snap.get_inject, rid) if rid else {}
     return {"ok": True, "inject": inj}
+
+
+# ---------------------------------------------------------------------------
+# v8.25 用户文件保护 + 一键全量备份 + 重名治理
+# ---------------------------------------------------------------------------
+def _file_protect():
+    try:
+        from pyqt.desktop import file_protect as _fp
+        return _fp
+    except Exception as e:
+        log_error("[web] file_protect 导入失败", e)
+        raise HTTPException(501, "当前环境不支持文件保护功能")
+
+
+class _BackupBody(BaseModel):
+    label: str = "full"
+
+
+@router.post("/backup/full")
+async def backup_full(body: _BackupBody, user: dict = Depends(current_user)):
+    """一键备份完整工作区到 backups/<ts>_full.zip（含data/，不含backups/.git/缓存）。"""
+    _fp = _file_protect()
+    label = "".join(c for c in str(body.label or "full") if c.isalnum() or c in "_-")[:32] or "full"
+    ok, zp, count = await asyncio.to_thread(_fp.backup_workspace_full, str(_workspace()), label)
+    if not ok:
+        raise HTTPException(500, _redact_ws(str(zp)))
+    try:
+        rel = str(Path(zp).relative_to(Path(str(_workspace())).resolve())).replace("\\", "/")
+    except (ValueError, OSError):
+        rel = str(zp)
+    return {"ok": True, "path": rel, "count": count}
+
+
+@router.get("/protect/scan")
+async def protect_scan(user: dict = Depends(current_user)):
+    """扫描重名/命名不清文件（copilot+worktree发现奇怪点即调此端点要求用户识别）。"""
+    _fp = _file_protect()
+    groups = await asyncio.to_thread(_fp.detect_ambiguous, str(_workspace()))
+    return {"ok": True, "count": len(groups), "groups": groups}
+
+
+@router.get("/protect/status")
+async def protect_status(user: dict = Depends(current_user)):
+    """受保护用户资产状态（数量/清单/新发现的人类修改）。"""
+    _fp = _file_protect()
+    st = await asyncio.to_thread(_fp.protect_status, str(_workspace()))
+    return {"ok": True, **st}
+
+
+class _QuarantineBody(BaseModel):
+    files: list = []
+    reason: str = ""
+
+
+@router.post("/protect/quarantine")
+async def protect_quarantine(body: _QuarantineBody, user: dict = Depends(current_user)):
+    """把用户确认的重名文件备份转移到 backups/quarantine/<ts>/（保留原相对路径）。"""
+    _fp = _file_protect()
+    files = [str(x) for x in (body.files or []) if str(x).strip()][:100]
+    if not files:
+        raise HTTPException(400, "files 不能为空")
+    # 目标逐个过保护矩阵中的系统保护（系统目录永不允许被转移走）
+    for rel in files:
+        _reject_protected_rel(str(rel).strip().replace("\\", "/"), for_read=False)
+    ok, qdir, moved = await asyncio.to_thread(
+        _fp.quarantine_files, str(_workspace()), files, str(body.reason or "")[:300])
+    if not ok:
+        raise HTTPException(500, _redact_ws(str(qdir)))
+    try:
+        rel = str(Path(qdir).relative_to(Path(str(_workspace())).resolve())).replace("\\", "/")
+    except (ValueError, OSError):
+        rel = str(qdir)
+    return {"ok": True, "dir": rel, "moved": moved}

@@ -90,6 +90,7 @@ def smoke_version(res: _Res, tag: str, entry_dir: Path, port: int,
     tmp = Path(tempfile.mkdtemp(prefix=f"deverai_smoke_{tag}_"))
     data_dir = tmp / "data"
     ws = tmp / "ws"
+    ws_path = tmp / "ws"   # v8.29：raw-image 冒烟用原始 Path（ws 变量后文被 Response 覆写）
     ws.mkdir(parents=True, exist_ok=True)
     # v8.21：把测试工作区初始化为 git 仓库（worktree/list 等端点依赖 git）
     try:
@@ -204,6 +205,52 @@ def smoke_version(res: _Res, tag: str, entry_dir: Path, port: int,
         g = client.get("/api/bridge/fs/grep", params={"pattern": "ABC123"})
         res.check(f"{tag}: fs/grep 命中", g.status_code == 200 and ("说明.md" in g.text))
 
+        # S8.5 v8.25/v8.26 用户文件保护 + 工作副本（禁碰=拷贝出去改）。
+        # v8.26 裁决：Lite 独立版不接（守卫在 lite.html 客户端），server 级断言仅 webui。
+        if tag != "lite":
+            asset_rel = "资料/答辩.pptx"
+            asset_bytes = b"PK\x03\x04 smoke fake pptx"
+            (ws / "资料").mkdir(parents=True, exist_ok=True)
+            (ws / "资料" / "答辩.pptx").write_bytes(asset_bytes)
+            wblk = client.post("/api/bridge/fs/write",
+                               json={"path": asset_rel, "content": "x"})
+            blk_text = ""
+            try:
+                blk_text = wblk.text
+            except Exception:
+                pass
+            res.check(f"{tag}: 用户资产 fs/write 被拦(403+引导)",
+                      wblk.status_code == 403 and "copy_user_asset" in blk_text,
+                      f"status={wblk.status_code}")
+            wc = client.post("/api/bridge/fs/workcopy",
+                             json={"path": asset_rel, "actor": "AI"})
+            wc_body = {}
+            try:
+                wc_body = wc.json()
+            except Exception:
+                pass
+            copy_rel = str(wc_body.get("copy") or "")
+            res.check(f"{tag}: fs/workcopy 创建副本(时间-作者-内容)",
+                      wc.status_code == 200 and wc_body.get("ok") is True
+                      and copy_rel.startswith("workcopy/") and "-AI-" in copy_rel,
+                      f"status={wc.status_code} body={str(wc_body)[:120]}")
+            if copy_rel:
+                try:
+                    res.check(f"{tag}: fs/workcopy 原文件不动且副本内容一致",
+                              (ws / "资料" / "答辩.pptx").read_bytes() == asset_bytes
+                              and (ws / copy_rel).read_bytes() == asset_bytes)
+                except OSError as e:
+                    res.check(f"{tag}: fs/workcopy 读取异常: {e}", False)
+                we = client.post("/api/bridge/fs/write",
+                                 json={"path": copy_rel, "content": "ai edited copy"})
+                res.check(f"{tag}: 工作副本可写（豁免保护）", we.status_code == 200,
+                          f"status={we.status_code}")
+            wtrav = client.post("/api/bridge/fs/workcopy", json={"path": "../x.pptx"})
+            # _resolve 层 403 / make_workcopy 层 400 均为正确拒绝
+            res.check(f"{tag}: fs/workcopy 越界拒绝",
+                      wtrav.status_code in (400, 403),
+                      f"status={wtrav.status_code}")
+
         # S9 run_command SSE 安全命令
         events, status = sse_run(client, base, {"command": "echo smoke_ok_marker_9001"})
         rc_val = None
@@ -290,6 +337,30 @@ def smoke_version(res: _Res, tag: str, entry_dir: Path, port: int,
             wr = client.post("/api/bridge/worktree/remove", json={"name": "smoke_nonexist"})
             res.check(f"{tag}: worktree/remove 未确认被拒", wr.status_code in (403, 400, 404),
                       f"status={wr.status_code}")
+
+            # v8.29 /fs/image raw 模式（仅 webui）：变更栏引用卡片 <img> 直链契约
+            if tag == "webui":
+                (ws_path / "smoke_px.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+                (ws_path / "smoke_px.gif").write_bytes(b"GIF89a" + b"0" * 24)
+                (ws_path / "smoke_tx.txt").write_text("not-image", encoding="utf-8")
+                r_png = client.get("/api/bridge/fs/image?path=smoke_px.png&raw=1")
+                ct_png = (r_png.headers.get("content-type") or "")
+                res.check(f"{tag}: fs/image raw png 回图片字节",
+                          r_png.status_code == 200 and ct_png.startswith("image/png")
+                          and r_png.content[:4] == b"\x89PNG",
+                          f"status={r_png.status_code} ct={ct_png}")
+                r_gif = client.get("/api/bridge/fs/image?path=smoke_px.gif&raw=1")
+                res.check(f"{tag}: fs/image raw gif 扩展魔数",
+                          r_gif.status_code == 200
+                          and (r_gif.headers.get("content-type") or "").startswith("image/gif"),
+                          f"status={r_gif.status_code}")
+                r_txt = client.get("/api/bridge/fs/image?path=smoke_tx.txt&raw=1")
+                res.check(f"{tag}: fs/image raw 非图片 415", r_txt.status_code == 415,
+                          f"status={r_txt.status_code}")
+                r_json = client.get("/api/bridge/fs/image?path=smoke_px.png")
+                res.check(f"{tag}: fs/image JSON 契约不变(ui_review)",
+                          r_json.status_code == 200 and bool((r_json.json() or {}).get("base64")),
+                          f"status={r_json.status_code}")
 
             # v8.22 外部 API 代理：SSRF 校验拒绝路径（不做真实外网请求）
             ep0 = client.post("/api/llm/ext_proxy", json={})
@@ -472,6 +543,7 @@ def _wait_sync_ready(url: str, token: str, timeout_s: float = 25.0) -> bool:
 def smoke_sync_server(res: _Res, port: int):
     tmp = Path(tempfile.mkdtemp(prefix="deverai_smoke_sync_"))
     data_dir = tmp / "sync_data"
+    sync_ws = tmp / "drift_ws"
     token = "smoke_sync_" + uuid.uuid4().hex[:12]
     mock = ThreadingHTTPServer(("127.0.0.1", 0), _MockLLMHandler)
     mock_port = mock.server_address[1]
@@ -481,6 +553,7 @@ def smoke_sync_server(res: _Res, port: int):
     try:
         env = os.environ.copy()
         env["SYNC_DATA_DIR"] = str(data_dir)
+        env["SYNC_WS_DIR"] = str(sync_ws)
         env["SYNC_TOKEN"] = token
         env["DRIFT_API_BASE"] = f"http://127.0.0.1:{mock_port}/v1"
         env["DRIFT_API_KEY"] = "sk-mock-smoke-key"
@@ -573,6 +646,49 @@ def smoke_sync_server(res: _Res, port: int):
         p3 = httpx.get(base + "/pull", headers=H, timeout=10).json()
         res.check("sync: 加密主快照原样保留", p3.get("data") == enc,
                   f"data={str(p3.get('data'))[:80]}")
+
+        # C10 v8.27 真·算力漂移：工作区/data 子集/密钥信封素材化到 APPDATA 对应位
+        def _mk_zip(files: dict) -> str:
+            import io as _io
+            import zipfile as _zipf
+            buf = _io.BytesIO()
+            with _zipf.ZipFile(buf, "w", _zipf.ZIP_DEFLATED) as zf:
+                for name, content in files.items():
+                    zf.writestr(name, content)
+            return base64.standard_b64encode(buf.getvalue()).decode("ascii")
+
+        ws_zip = _mk_zip({"main.py": "print('drift')", "docs/readme.md": "# ws"})
+        data_zip = _mk_zip({"audit.jsonl": "{}\n", "checkpoints/task/x.bak": "bak"})
+        keys_enc = json.dumps({"v": 1, "kind": "deverai-keys", "salt": "AA", "tok": "BB"})
+        r4 = httpx.post(base + "/push", json={
+            "data": snap_desk, "cold": snap_desk, "pid": "smoke_proj_1",
+            "ws_zip": ws_zip, "data_zip": data_zip, "keys_enc": keys_enc,
+            "upload_mode": "full"}, headers=H, timeout=20)
+        mat = (r4.json() or {}).get("materialized") or {}
+        ws_dir = sync_ws / "smoke_proj_1" / "workspace"
+        res.check("sync: 工作区素材化到 APPDATA 位",
+                  r4.status_code == 200 and (ws_dir / "main.py").is_file()
+                  and (ws_dir / "docs" / "readme.md").is_file(),
+                  f"mat={str(mat)[:140]}")
+        res.check("sync: data 子集落位（WorkTree/审计不入工作区）",
+                  (sync_ws / "smoke_proj_1" / "data" / "audit.jsonl").is_file()
+                  and (sync_ws / "smoke_proj_1" / "data" / "checkpoints" / "task" / "x.bak").is_file())
+        res.check("sync: 密钥信封仅密文落盘",
+                  (sync_ws / "smoke_proj_1" / "keys.enc").is_file())
+        st4 = httpx.get(base + "/drift/status", headers=H, timeout=5).json()
+        dw = st4.get("drift_ws") or {}
+        res.check("sync: /drift/status 返回素材化落位与续算指引",
+                  dw.get("latest") == "smoke_proj_1" and bool(dw.get("resume_hint")),
+                  f"dw={str(dw)[:140]}")
+
+        # C11 v8.27 zip-slip 防护：../ 穿越成员不得逃出目标目录
+        evil = _mk_zip({"../evil.txt": "x"})
+        httpx.post(base + "/push", json={
+            "data": snap_desk, "cold": snap_desk, "pid": "evil_proj", "ws_zip": evil},
+            headers=H, timeout=20)
+        res.check("sync: zip-slip 穿越拒绝",
+                  not (sync_ws / "evil.txt").exists()
+                  and not (sync_ws / "evil_proj" / "workspace" / "evil.txt").exists())
 
         # C10 /drift/finish 复位
         f = httpx.post(base + "/drift/finish", json={}, headers=H, timeout=5)

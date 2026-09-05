@@ -124,6 +124,24 @@ function buildSystemPrompt() {
     '- 不引入非必要第三方库；能用标准库解决的不引新依赖。',
     '- 副作用后置：落盘/建目录在审批通过后才执行，审批异常升级用户不静默放行。',
   );
+  // v8.25 用户文件保护 + 一键备份 + 重名治理（与桌面 agent.py USER_FILE_PROTECT_RULES 同语义）
+  parts.push(
+    '',
+    '【用户文件保护铁律（必须遵守）】',
+    '- PPT/Excel/Word/PDF/压缩包/音视频等用户手工资产：AI不允许用write/edit/delete直接覆盖删除，也不允许用run_command执行触碰这些文件的命令（后端会拦截并告诉你文件名）。',
+    '- 工具返回[用户文件保护]拦截时立即停手，说明"已保护未覆盖"，建议用户"一键备份完整工作区"，等用户明确授权，仍优先用户手动处理。',
+    '- 看到"副本/copy/(1)/新建/未命名/untitled"等多份疑似重复或文件名奇怪时，必须先扫描重名（/protect/scan），把分组摆给用户逐组识别，经确认后才备份转移（/protect/quarantine），禁止擅自删除。',
+    '- 禁碰语义（v8.26）＝"拷贝出去改"：用户资产原文件永远不修改；确需处理内容时先征得用户同意，调用copy_user_asset生成workcopy/工作副本（时间-作者-内容命名），之后只在副本上操作。',
+    '- 新建文件命名规则（v8.26）：优先沿用工作区已有命名惯例；无惯例时按「时间-作者-内容」命名（如20260905-用户-实验报告.pptx；AI中间产物作者写AI）。',
+  );
+  // v8.28 云端交付纪律：配置了自动上云漂移时，用户端可能无法直接打开工作区文件
+  if (cfg.sync_server_url) {
+    parts.push(
+      '',
+      '【云端交付纪律（v8.28）】',
+      '- 本客户端已配置自动上云漂移：用户端可能无法直接预览工作区文件。任务结束时必须在变更栏用引用形式交付产出——HTML 文件用「预览/源码」引用，图片用图组引用（多图自动扑克牌组），其余给「仅文件」，不要只报文件路径。',
+    );
+  }
   // v8.4 UI 自截图确认纪律：制造本地 GUI 后必须截图自检（chat 形态以外都适用）
   if (cfg.ENABLE_APP_SHOT !== false || cfg.ENABLE_UI_REVIEW !== false) {
     parts.push(
@@ -440,6 +458,7 @@ async function runSession(userText) {
   // 失败（非用户主动停止）时把本次追加的 user/assistant 消息弹出，避免脏历史污染下一轮。
   const rollbackBase = App.history.length;
   emit({ type: 'run_start' });
+  Agent.changes = [];   // v8.28 变更栏：每轮重置文件改动采集
   App.history.push({ role: 'user', content: userText });
   saveHistory().catch(() => {});
 
@@ -549,6 +568,20 @@ async function runSession(userText) {
           emit: (type, payload) => emit({ ...payload, type, call_id: callId }),
         });
 
+        // v8.28 变更栏采集：文件类工具登记本轮改动（run_done 时渲染变更栏引用卡片）
+        try {
+          const _cn = String(tc.function.name || '');
+          const _cp = String((args && (args.path || args.to)) || '');
+          if (_cp && ['write_file', 'edit_file', 'delete_file', 'mkdir', 'rename',
+                      'copy_user_asset'].includes(_cn)) {
+            Agent.changes = Agent.changes || [];
+            const _last = Agent.changes[Agent.changes.length - 1];
+            if (!_last || _last.path !== _cp || _last.action !== _cn) {
+              Agent.changes.push({ path: _cp, action: _cn });
+            }
+          }
+        } catch (e) { /* 采集失败不影响主流程 */ }
+
         emit({
           type: 'tool_result',
           call_id: callId,
@@ -581,7 +614,7 @@ async function runSession(userText) {
       }
     }
 
-    emit({ type: 'run_done', rounds, usage });
+    emit({ type: 'run_done', rounds, usage, changes: (Agent.changes || []).slice(-50) });
     if (cfg.sleep_enabled) checkSleepGoal();
   } catch (e) {
     // 运算符优先级显式加括号：`e && e.name === 'AbortError' || Agent.aborted`

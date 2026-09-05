@@ -600,6 +600,7 @@ function onAgentEvent(ev) {
       // 顺序反了完成消息尾部会残留光标
       setBusyUI(false);
       flushAI();
+      if (Array.isArray(ev.changes) && ev.changes.length) renderChangeLog(ev.changes);
       break;
     }
     case 'run_error':
@@ -848,6 +849,12 @@ function openSnapshotDialog() {
     <div class="modal-head"><span class="modal-title">${icon('archive', 14)} 快照与版本回退</span>
       <button class="icon-btn" id="snap-close">${icon('close', 12)}</button></div>
     <div class="modal-body">
+      <div class="section-title">完整备份与文件治理（v8.25）</div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+        <button class="btn primary" id="snap-full-backup">一键备份完整工作区</button>
+        <button class="btn" id="snap-scan-ambiguous">扫描重名/命名不清文件</button>
+      </div>
+      <div id="snap-protect-out" class="form-hint"></div>
       <div class="section-title">文件版本快照（写文件前自动备份）</div>
       <div id="snap-files"></div>
       <div class="section-title">任务级会话快照（一轮对话）</div>
@@ -855,6 +862,30 @@ function openSnapshotDialog() {
     </div>`;
   $('#snap-close').onclick = () => modal.classList.add('hidden');
   closeOnBackdrop();
+  // v8.25：一键备份 + 重名扫描接线
+  const _fb = $('#snap-full-backup');
+  if (_fb) _fb.onclick = async () => {
+    const out = $('#snap-protect-out');
+    if (out) out.textContent = '正在备份完整工作区…';
+    try {
+      const r = await api('/api/bridge/backup/full', { method: 'POST', body: { label: 'full' } });
+      if (out) out.textContent = `已备份：${r.path}（${r.count} 个文件）`;
+      toast('已一键备份完整工作区', 'ok');
+    } catch (e) { if (out) out.textContent = '备份失败: ' + e.message; toast('备份失败: ' + e.message, 'err'); }
+  };
+  const _sa = $('#snap-scan-ambiguous');
+  if (_sa) _sa.onclick = async () => {
+    const out = $('#snap-protect-out');
+    if (out) out.textContent = '正在扫描重名/命名不清文件…';
+    try {
+      const r = await api('/api/bridge/protect/scan');
+      const groups = (r && r.groups) || [];
+      if (!groups.length) { if (out) out.textContent = '未发现重名/命名不清文件。'; return; }
+      if (out) out.innerHTML = groups.slice(0, 20).map((g) =>
+        `<div><b>${esc(g.group)}</b>：${esc(g.reason)}<br>${g.files.map((f) => esc(f)).join('<br>')}</div>`
+      ).join('<hr>') + `<div>共 ${r.count} 组，请逐组识别后决定保留/隔离（隔离走 /protect/quarantine）。</div>`;
+    } catch (e) { if (out) out.textContent = '扫描失败: ' + e.message; }
+  };
   loadSnapshotFiles();
   loadSnapshotSessions();
 }
@@ -1070,4 +1101,171 @@ async function toggleRollbackPoints(row, rid) {
   } catch (e) {
     panel.innerHTML = '<div class="form-hint">加载失败: ' + esc(String((e && e.message) || e)) + '</div>';
   }
+}
+
+/* ============ v8.28 变更栏 + 引用卡片（预览/源码/仅文件 + 多图扑克牌组） ============ */
+const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']); // v8.29: svg 走源码行（/fs/image 魔数不含 svg）
+const TEXT_CODE_EXT = new Set(['js', 'mjs', 'cjs', 'py', 'md', 'json', 'css', 'txt', 'yml', 'yaml', 'toml', 'ini', 'sh', 'bat', 'ps1', 'ts', 'csv', 'log', 'svg']);
+
+function _refExt(p) { return (String(p).split('.').pop() || '').toLowerCase(); }
+function _imgUrl(p) { return '/api/bridge/fs/image?path=' + encodeURIComponent(p) + '&raw=1'; }
+
+/* 预览：iframe sandbox（allow-scripts、无同源），HTML 独立渲染不污染聊天区 */
+async function _refOpenPreview(path) {
+  try {
+    const data = await readFile(path);
+    const modal = document.createElement('div');
+    modal.className = 'ref-modal';
+    const bar = el('div', 'ref-modal-bar');
+    bar.appendChild(el('span', 'ref-modal-title', '预览 · ' + basename(path)));
+    const close = el('button', 'btn ref-close', '关闭');
+    close.onclick = () => modal.remove();
+    bar.appendChild(close);
+    const frame = document.createElement('iframe');
+    frame.className = 'ref-frame';
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.srcdoc = String(data.content || '');
+    modal.appendChild(bar);
+    modal.appendChild(frame);
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    document.body.appendChild(modal);
+  } catch (e) { toast('预览失败: ' + ((e && e.message) || e), 'err'); }
+}
+
+async function _refCopy(path) {
+  try {
+    const data = await readFile(path);
+    await navigator.clipboard.writeText(String(data.content || ''));
+    toast('已复制到剪贴板', 'ok');
+  } catch (e) { toast('复制失败: ' + ((e && e.message) || e), 'err'); }
+}
+
+/* 源码：默认折叠，点开懒加载，可再复制（不直接展开） */
+function _refToggleSrc(row) {
+  const pre = row.querySelector('.ref-src');
+  if (!pre) return;
+  pre.classList.toggle('hidden');
+  if (!pre.classList.contains('hidden') && !pre.dataset.loaded) {
+    pre.dataset.loaded = '1';
+    pre.textContent = '加载中…';
+    readFile(row.dataset.path).then((d) => { pre.textContent = String(d.content || ''); })
+      .catch((e) => { pre.textContent = '读取失败: ' + ((e && e.message) || e); });
+  }
+}
+
+function _refLightbox(path) {
+  const modal = document.createElement('div');
+  modal.className = 'ref-modal ref-lightbox';
+  const img = document.createElement('img');
+  img.className = 'ref-big';
+  img.src = _imgUrl(path);
+  modal.appendChild(img);
+  modal.onclick = () => modal.remove();
+  document.body.appendChild(modal);
+}
+
+/* 多图：微信式扑克牌叠放 + 悬停距离驱动排斥位移 + 点击放大 */
+function buildPoker(items) {
+  const wrap = el('div', 'ref-poker');
+  const cards = [];
+  items.forEach((f, i) => {
+    const c = el('div', 'ref-pcard');
+    c.style.zIndex = String(i + 1);
+    const img = document.createElement('img');
+    img.src = _imgUrl(f.path);
+    img.alt = basename(f.path);
+    img.loading = 'lazy';
+    c.appendChild(img);
+    c.appendChild(el('div', 'ref-pname', basename(f.path)));
+    c.title = '点击放大';
+    c.onclick = () => _refLightbox(f.path);
+    wrap.appendChild(c);
+    cards.push(c);
+  });
+  wrap.addEventListener('mousemove', (e) => {
+    const r = wrap.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    cards.forEach((c, i) => {
+      const cr = c.getBoundingClientRect();
+      const cx = cr.left + cr.width / 2 - r.left, cy = cr.top + cr.height / 2 - r.top;
+      const dist = Math.hypot(mx - cx, my - cy) || 1;
+      const push = Math.max(0, 110 - dist) / 110;      // 距离驱动：越近排斥越强
+      const sx = cx <= mx ? -1 : 1;
+      const lift = dist < 60 ? 1 : 0;
+      c.style.transform = `translate(${sx * push * 30}px, ${-push * 14 - lift * 8}px) scale(${1 + lift * 0.1}) rotate(${sx * push * 5}deg)`;
+      c.style.zIndex = String(10 + Math.round(lift * 20 + push * 5) + i);
+    });
+  });
+  wrap.addEventListener('mouseleave', () => {
+    cards.forEach((c, i) => { c.style.transform = ''; c.style.zIndex = String(i + 1); });
+  });
+  return wrap;
+}
+
+function buildSingleImg(f) {
+  const row = el('div', 'ref-row');
+  const th = el('img', 'ref-thumb');
+  th.src = _imgUrl(f.path);
+  th.title = '点击放大';
+  th.onclick = () => _refLightbox(f.path);
+  row.appendChild(th);
+  row.appendChild(el('span', 'ref-name', basename(f.path)));
+  row.appendChild(el('span', 'ref-act', f.action));
+  return row;
+}
+
+function buildRefRow(f) {
+  const ext = _refExt(f.path);
+  const row = el('div', 'ref-row');
+  row.dataset.path = f.path;
+  row.appendChild(el('span', 'ref-name', basename(f.path)));
+  row.appendChild(el('span', 'ref-act', f.action));
+  if (ext === 'html' || ext === 'htm') {
+    const prev = el('button', 'btn ref-btn', '预览');
+    prev.onclick = () => _refOpenPreview(f.path);
+    row.appendChild(prev);
+    const src = el('button', 'btn ref-btn', '源码');
+    src.onclick = () => _refToggleSrc(row);
+    row.appendChild(src);
+  } else if (TEXT_CODE_EXT.has(ext)) {
+    const src = el('button', 'btn ref-btn', '源码');
+    src.onclick = () => _refToggleSrc(row);
+    row.appendChild(src);
+  }
+  if ((ext === 'html' || ext === 'htm') || TEXT_CODE_EXT.has(ext)) {
+    const copy = el('button', 'btn ref-btn', '复制');
+    copy.onclick = () => _refCopy(f.path);
+    row.appendChild(copy);
+  }
+  // 无按钮 = 「仅文件」引用（默认态，不展开内容）
+  const pre = el('pre', 'ref-src hidden');
+  row.appendChild(pre);
+  return row;
+}
+
+function renderChangeLog(changes) {
+  try {
+    const seen = new Set();
+    const files = [];
+    for (const c of changes || []) {
+      const p = String(c.path || '');
+      const key = p + '|' + (c.action || '');
+      if (!p || seen.has(key)) continue;
+      seen.add(key);
+      files.push({ path: p, action: c.action || '' });
+    }
+    if (!files.length) return;
+    const m = Chat.currentAI || newAIMessage();
+    const card = el('div', 'tool-card chlog');
+    const head = el('div', 'tc-head');
+    head.appendChild(el('span', 'tc-name', '变更栏 · ' + files.length + ' 个文件'));
+    card.appendChild(head);
+    const imgs = files.filter((f) => IMG_EXT.has(_refExt(f.path)));
+    const rest = files.filter((f) => !imgs.includes(f));
+    if (imgs.length >= 2) card.appendChild(buildPoker(imgs));
+    else if (imgs.length === 1) card.appendChild(buildSingleImg(imgs[0]));
+    for (const f of rest) card.appendChild(buildRefRow(f));
+    m.toolsWrap.appendChild(card);
+    scrollChat();
+  } catch (e) { /* 渲染失败不影响主流程 */ }
 }

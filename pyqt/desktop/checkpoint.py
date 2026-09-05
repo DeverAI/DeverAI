@@ -27,8 +27,21 @@ from .storage import save_text
 
 CHECKPOINT_DIR: Path = DATA_DIR / "checkpoints"
 _MAX_LIST = 50          # list_checkpoints 默认返回条数上限
-_MAX_PER_FILE = 20      # 每个文件最多保留的版本数
 _MAX_TOTAL = 600        # 磁盘上最多保留 checkpoint 文件数（超出删最旧）
+
+# v8.28：每文件保留版本数可配（默认 2 = 上两版，C 盘友好）。测试可用 _KEEP_OVERRIDE 覆盖。
+_KEEP_OVERRIDE: int | None = None
+
+
+def _max_per_file() -> int:
+    if _KEEP_OVERRIDE is not None:
+        return max(1, int(_KEEP_OVERRIDE))
+    try:
+        from .config import get_config
+        v = int(getattr(get_config(), "checkpoint_keep_per_file", 2) or 2)
+        return max(1, min(v, 50))
+    except Exception:
+        return 2
 
 _SOURCE_NAMES = {"ai": "AI 编辑", "human": "人类编辑", "model": "模型要求", "restore": "回退操作"}
 
@@ -74,6 +87,51 @@ def _safe_name(rel_path: str) -> str:
     return name
 
 
+def save_checkpoint_bytes(rel_path: str, data: bytes, task_id: str = "",
+                          source: str = "ai") -> str | None:
+    """v8.25 二进制快照（PPT/Excel/PDF等用户资产）：原样存字节，不做utf-8解码。
+
+    文本快照走save_checkpoint；二进制走本函数（.bak为二进制，meta多记encoding=bytes）。
+    """
+    rel_path = str(rel_path or "").strip().replace("\\", "/")
+    if not rel_path or data is None:
+        return None
+    # v8.30：uploads/ 不进 checkpoint（Future.md 上传约束，防 C 盘膨胀；整包快照/一键备份仍覆盖）
+    _rp = rel_path.lower()  # v8.31：Windows 大小写不敏感，Uploads/ 同目录不得绕过
+    if _rp == "uploads" or _rp.startswith("uploads/"):
+        return None
+    task_id = _safe_name(task_id or "default")
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = secrets.token_hex(2)
+    base = _safe_name(rel_path)
+    bak_name = f"{base}.{ts}.{suffix}.bak"
+    bak_dir = CHECKPOINT_DIR / task_id
+    try:
+        bak_dir.mkdir(parents=True, exist_ok=True)
+        bak_path = bak_dir / bak_name
+        with open(bak_path, "wb") as f:
+            f.write(bytes(data))
+        meta_path = bak_dir / f"{bak_name}.meta"
+        try:
+            meta_path.write_text(
+                f"rel_path={rel_path}\nts={ts}\ntask_id={task_id}\n"
+                f"source={source or 'ai'}\nencoding=bytes\n",
+                encoding="utf-8")
+        except Exception:
+            bak_path.unlink(missing_ok=True)
+            return None
+        try:
+            from .session_snap import is_readonly
+            if not is_readonly():
+                _gc()
+        except Exception:
+            _gc()
+        return str(bak_path)
+    except Exception as e:
+        log_error(f"checkpoint 二进制保存失败 {rel_path}", e)
+        return None
+
+
 def save_checkpoint(rel_path: str, content: str, task_id: str = "", source: str = "ai") -> str | None:
     """快照原文件内容。返回 .bak 文件路径，失败返回 None。
 
@@ -82,6 +140,10 @@ def save_checkpoint(rel_path: str, content: str, task_id: str = "", source: str 
     """
     rel_path = str(rel_path or "").strip().replace("\\", "/")  # 统一分隔符，AI/human 同组
     if not rel_path:
+        return None
+    # v8.30：uploads/ 不进 checkpoint（Future.md 上传约束，防 C 盘膨胀；整包快照/一键备份仍覆盖）
+    _rp = rel_path.lower()  # v8.31：Windows 大小写不敏感，Uploads/ 同目录不得绕过
+    if _rp == "uploads" or _rp.startswith("uploads/"):
         return None
     if content is None:
         return None
@@ -217,16 +279,17 @@ def restore_checkpoint(bak_path: str, current_rel_path: str = "") -> tuple[bool,
 
 
 def _gc() -> None:
-    """保留策略：每文件最多 _MAX_PER_FILE 版，全局最多 _MAX_TOTAL 版，超量删最旧。"""
+    """保留策略：每文件最多 _max_per_file() 版（v8.28 可配，默认 2），全局最多 _MAX_TOTAL 版，超量删最旧。"""
     try:
         items = _scan()
         by_file: dict = {}
+        keep_n = _max_per_file()
         for it in items:
             by_file.setdefault(it["rel_path"], []).append(it)
         doomed: list[Path] = []
         for rel, vers in by_file.items():
             vers.sort(key=lambda x: x["ts"])
-            for it in vers[: -_MAX_PER_FILE]:
+            for it in vers[:-keep_n]:
                 doomed.append(Path(it["bak_path"]))
         kept = [it for it in items if Path(it["bak_path"]) not in doomed]
         kept.sort(key=lambda x: x["ts"], reverse=True)

@@ -116,6 +116,8 @@
 
 [漂移回本地失败路径仍复位] 「漂移回本地」回调不判断拉取/合并结果就 end_drift+finish+解锁 → 服务器不可达时云端产出从未合并进本地，且 finish 复位未回传计数，下次推送用缺消息的本地快照覆盖服务器 → 云端产出永久丢失 → 合并函数必须返回成功状态，仅合并成功才复位漂移状态与只读锁；失败保持锁定并提示重试。
 
+[desktop 别名导入恒失败] webui 服务端写 `from desktop import ...`（bridge/snap_bridge/meta_bridge/proxy/snap_util）——sys.path 只有 repo 根（bridge.py:35 前置），`desktop` 别名不存在，导入恒 ModuleNotFoundError 且被 try/except 静默吞掉 → 功能整体死代码：v8.25 用户资产拦截在 webui 端从未生效（写放行）、/checkpoint/* 一类端点 501 → 服务端懒导入一律用 `from pyqt.desktop import ...`（正确形式见 lite_server.py / bridge.py:1481）；冒烟必须真实调用新接线端点（workcopy 403/200 断言即抓出此类）。遗留同类：meta_bridge/proxy/toolsmith 共 7 处（v8.26 裁决暂不激活，先解决 desktop.config 不认 DEVERAI_DATA_DIR 的数据隔离）。
+
 [漂移登记线程退出竞态] closeEvent 发起的「登记漂移」QThread fire-and-forget 不等待 → 登记请求可能未发出就关窗（服务器不计数），且解释器退出时 QThread 活销毁 → 关窗路径对关键登记线程有界 wait（2.5s），线程注册模块级保活集合 finished 移除。
 
 [加密主快照被明文覆盖] 服务器 /chat 把无口令冷备压缩流直接回写主快照文件 → 用户设了同步口令后，加密主副本被静默降级为明文（功能不报错，隐私承诺被破） → 回写前判定现有主快照格式（尝试按冷备流解包），加密快照绝不覆盖；云端消息只进冷备文件，由 /pull 附带 cold 副本回传，桌面端历史以冷备为准（冷备恒为超集）。
@@ -213,3 +215,7 @@
 [同文件并行 Edit 竞态] 对同一文件（index.html）并行发多个 Edit 工具调用，后续编辑基于陈旧内容整体回写，先前编辑被覆盖（fs.js 版本号被回滚到旧值）→ 同一文件的多次 Edit 必须串行执行；编辑后 Read 复核终态。
 
 [四端功能版本门控] 冒烟测试把 v8.18 终端环境池断言同时套在 lite 与 webui 上，而 lite 刻意不实现该功能（v8.18 裁决四端=webui 前后端+桌面前后端）→ lite 永久红 → 测试按版本能力门控（expect_term 参数）；新增「部分版本实现」的功能时，同步声明测试范围。
+
+[JSON 端点被当资源 URL 直用] /fs/image 返回 JSON（base64 字段），v8.28 引用卡片却把端点 URL 直接赋给 img.src → 浏览器把 JSON 当图片解码必挂，扑克牌组/单图/lightbox 全部渲染失败，且冒烟无浏览器级断言测不出 → 「供 <img>/资源标签直用」与「供 fetch 解析」是两种契约：资源直用必须返回原始字节（raw 参数 + content-type），JSON 契约保持不变；新端点必须在使用方语义下真实调用一次（v8.29 补 raw 模式 + 4 条冒烟断言）。
+
+[copy2 保留 mtime 破坏下游增量] v8.30 入库用 shutil.copy2（保留源 mtime），而 drift minimal 增量按 mtime > 上次推送基准筛文件 → 拖进来的旧文件永远进不了增量包，续算端工作区缺文件（冒烟测不出，只有顺着时间语义想才看得见）→ 「复制/落盘类动作」必须顺着下游的时间/顺序语义核对一遍：入库类复制用 shutil.copy（新 mtime）或显式 os.utime；同族陷阱还有 Windows 大小写不敏感路径让前缀过滤被 Uploads/ 变体绕过。

@@ -646,6 +646,21 @@ async def fs_write(body: dict, user: dict = Depends(auth.current_user)):
     p = _resolve(rel)
     if _is_protected(p, _workspace()):
         raise HTTPException(403, "该文件属于系统受保护文件，禁止写入")
+    # v8.25 用户文件保护（与bridge.py同源）：用户资产AI禁写
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _root = _P(__file__).resolve().parent.parent.parent
+        if str(_root) not in _sys.path:
+            _sys.path.insert(0, str(_root))
+        from pyqt.desktop import file_protect as _fp
+        _reason = _fp.check_ai_write_block(str(_workspace()), rel)
+        if _reason:
+            raise HTTPException(403, _reason)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     if p.is_dir():
         raise HTTPException(400, "path 指向目录，无法写入文件")
     content = str(body.get("content") or "")
@@ -756,6 +771,22 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
     #（lite.html 危险命令 confirm 通过后置 danger_ok=true；裸调 API 的破坏性命令被拦截）
     if is_dangerous_cmd(cmd) and not _to_bool(body.get("danger_ok")):
         raise HTTPException(403, "危险命令需在界面确认后执行")
+    # v8.25 用户文件保护：命令触碰用户资产直接拦截
+    try:
+        import sys as _sys2
+        from pathlib import Path as _P2
+        _root2 = _P2(__file__).resolve().parent.parent.parent
+        if str(_root2) not in _sys2.path:
+            _sys2.path.insert(0, str(_root2))
+        from pyqt.desktop import file_protect as _fp2
+        _hits = _fp2.command_touches_user_asset(cmd, str(_workspace()))
+        if _hits:
+            raise HTTPException(403, "[用户文件保护] 命令涉及用户手工资产（"
+                                + "、".join(_hits[:5]) + "），AI不允许执行。请先一键备份，由用户手动执行。")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     cwd = _workspace()
     rel = str(body.get("cwd") or "")
     if rel:

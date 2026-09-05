@@ -447,6 +447,15 @@ async def tool_write_file(args, ctx: ToolContext) -> dict:
     p = resolve_ws(ctx, rel)
     if _is_protected(ctx, p):
         return {"ok": False, "output": f"该文件属于系统受保护文件，禁止写入: {rel}"}
+    # v8.25 用户文件保护：PPT/Excel/Word/PDF等用户资产禁AI文本覆盖
+    if getattr(ctx.cfg, "ENABLE_USER_FILE_PROTECT", True):
+        try:
+            from . import file_protect as _fp
+            _reason = _fp.check_ai_write_block(ctx.workspace, str(rel))
+            if _reason:
+                return {"ok": False, "output": _reason}
+        except Exception:
+            pass
     g = _tree_guard(ctx, rel)
     if g:
         return g
@@ -538,6 +547,15 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
     p = resolve_ws(ctx, rel)
     if _is_protected(ctx, p):
         return {"ok": False, "output": f"该文件属于系统受保护文件，禁止编辑: {rel}"}
+    # v8.25 用户文件保护
+    if getattr(ctx.cfg, "ENABLE_USER_FILE_PROTECT", True):
+        try:
+            from . import file_protect as _fp
+            _reason = _fp.check_ai_write_block(ctx.workspace, str(rel))
+            if _reason:
+                return {"ok": False, "output": _reason}
+        except Exception:
+            pass
     g = _tree_guard(ctx, rel)
     if g:
         return g
@@ -651,6 +669,15 @@ async def tool_delete_file(args, ctx: ToolContext) -> dict:
         return {"ok": False, "output": "禁止删除工作区根目录"}
     if _is_protected(ctx, p):
         return {"ok": False, "output": f"该文件属于系统受保护文件，禁止删除: {rel}"}
+    # v8.25 用户文件保护：用户资产不允许AI删除（请用户手动处理或先隔离）
+    if getattr(ctx.cfg, "ENABLE_USER_FILE_PROTECT", True):
+        try:
+            from . import file_protect as _fp
+            _reason = _fp.check_ai_write_block(ctx.workspace, str(rel))
+            if _reason:
+                return {"ok": False, "output": _reason + "删除同样被禁止。"}
+        except Exception:
+            pass
     if not p.exists():
         return {"ok": False, "output": f"不存在: {rel}"}
     g = _tree_guard(ctx, rel)
@@ -674,6 +701,18 @@ async def tool_delete_file(args, ctx: ToolContext) -> dict:
             old = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             old = ""
+        # v8.25 非Git自动备份增强：二进制/用户资产删除前做二进制checkpoint（文本快照会损坏）
+        try:
+            from . import file_protect as _fp2
+            raw = p.read_bytes()
+            if b"\x00" in raw[:8192] or _fp2.is_user_asset(str(rel)):
+                from . import checkpoint as _ckpt_del
+                if getattr(ctx.cfg, "ENABLE_CHECKPOINT", True):
+                    _ckpt_del.save_checkpoint_bytes(
+                        str(rel), raw, task_id=getattr(ctx, "task_id", "") or "default",
+                        source="ai")
+        except Exception:
+            pass
     elif was_dir:
         # v8.6 目录删除前整目录 zip 备份（轮内可整目录回退，防删目录救不回）
         # v8.7 审查修复：zip 打包丢 to_thread 防阻塞事件循环；文件名加时间戳防同名目录碰撞
@@ -919,6 +958,20 @@ async def tool_run_command(args, ctx: ToolContext) -> dict:
     else:
         p = Path(ctx.workspace).resolve()
 
+    # v8.25 用户文件保护：命令触碰用户资产（PPT/Excel/PDF等）直接拦截，不进审批
+    if getattr(ctx.cfg, "ENABLE_USER_FILE_PROTECT", True):
+        try:
+            from . import file_protect as _fp
+            _hits = _fp.command_touches_user_asset(cmd, ctx.workspace or ctx.cfg.workspace)
+            if _hits:
+                return {"ok": False,
+                        "output": ("[用户文件保护] 命令涉及用户手工资产（"
+                                   + "、".join(_hits[:5])
+                                   + "），AI不允许执行相关命令（防覆盖用户修改）。"
+                                     "请先提示用户“一键备份完整工作区”，并由用户手动执行该命令；"
+                                     "如确需AI执行，请用户备份后在审批中明确授权。")}
+        except Exception:
+            pass
     # v8.5.x 审查修复：移除 LLM 可控的 _pre_approved 绕过——审批门是否放行统一由
     # _request_approval 内部四模式路由决定（ENABLE_APPROVAL/free/danger/copilot 均在其内处理）。
     approved = await _request_approval(
@@ -2615,6 +2668,110 @@ async def tool_list_audits(args, ctx: ToolContext) -> dict:
             "meta": {"count": len(items)}}
 
 
+async def tool_backup_workspace(args, ctx: ToolContext) -> dict:
+    """v8.25 一键备份完整工作区（非Git自动备份Worktree的整包出口）。"""
+    block = _readonly_block("backup_workspace")
+    if block:
+        return block
+    if not getattr(ctx.cfg, "ENABLE_FULL_BACKUP", True):
+        return {"ok": False, "output": "完整备份未开启（ENABLE_FULL_BACKUP）。"}
+    from . import file_protect as _fp
+    label = str(args.get("label") or "full").strip() or "full"
+    label = "".join(c for c in label if c.isalnum() or c in "_-")[:32] or "full"
+    ws = ctx.workspace or ctx.cfg.workspace
+    ok, zp, count = await asyncio.to_thread(_fp.backup_workspace_full, ws, label)
+    if not ok:
+        return {"ok": False, "output": zp}
+    rel = zp
+    try:
+        rel = str(Path(zp).relative_to(Path(ws).resolve())).replace("\\", "/")
+    except ValueError:
+        pass
+    await _emit(ctx, {"type": "file_changed", "path": rel})
+    return {"ok": True, "output": f"已一键备份完整工作区：{rel}（{count} 个文件）",
+            "meta": {"path": rel, "count": count}}
+
+
+async def tool_scan_ambiguous_files(args, ctx: ToolContext) -> dict:
+    """v8.25 重名/命名不清扫描（copilot+worktree发现奇怪点即调此工具要求用户识别）。"""
+    from . import file_protect as _fp
+    ws = ctx.workspace or ctx.cfg.workspace
+    groups = await asyncio.to_thread(_fp.detect_ambiguous, ws)
+    if not groups:
+        return {"ok": True, "output": "未发现重名/命名不清文件。", "meta": {"count": 0}}
+    lines = []
+    for g in groups[:30]:
+        lines.append(f"- [{g['group']}] {g['reason']}\n  " + "\n  ".join(g["files"][:8]))
+    tail = "" if len(groups) <= 30 else f"\n…还有 {len(groups) - 30} 组未列出"
+    return {"ok": True,
+            "output": (f"发现 {len(groups)} 组重名/命名不清文件，请用户逐组识别："
+                       "确认保留哪个、其余备份/转移（quarantine_files）。\n" + "\n".join(lines) + tail),
+            "meta": {"count": len(groups), "groups": groups[:30]}}
+
+
+async def tool_quarantine_files(args, ctx: ToolContext) -> dict:
+    """v8.25 备份/转移重名文件到 backups/quarantine/<ts>/（保留原相对路径）。"""
+    block = _readonly_block("quarantine_files")
+    if block:
+        return block
+    if not getattr(ctx.cfg, "ENABLE_AMBIGUOUS_GUARD", True):
+        return {"ok": False, "output": "重名治理未开启（ENABLE_AMBIGUOUS_GUARD）。"}
+    files = _as_str_list(args.get("files"))
+    reason = str(args.get("reason") or "")[:300]
+    if not files:
+        return {"ok": False, "output": "请提供 files（要备份/转移的相对路径列表）。"}
+    if len(files) > 100:
+        return {"ok": False, "output": "单次最多隔离 100 个文件。"}
+    approved = await _request_approval(
+        ctx, "quarantine_files",
+        {"command": f"备份转移 {len(files)} 个重名文件到 quarantine（{reason or '重名治理'}）",
+         "dangerous": True})
+    if not approved:
+        return {"ok": False, "output": "用户拒绝了备份转移操作。", "meta": {"denied": True}}
+    from . import file_protect as _fp
+    ws = ctx.workspace or ctx.cfg.workspace
+    ok, qdir, moved = await asyncio.to_thread(_fp.quarantine_files, ws, files, reason)
+    if not ok:
+        return {"ok": False, "output": qdir}
+    for r in moved:
+        await _emit(ctx, {"type": "file_changed", "path": r})
+    rel = qdir
+    try:
+        rel = str(Path(qdir).relative_to(Path(ws).resolve())).replace("\\", "/")
+    except ValueError:
+        pass
+    return {"ok": True, "output": f"已备份转移 {len(moved)} 个文件到 {rel}",
+            "meta": {"dir": rel, "moved": moved}}
+
+
+async def tool_copy_user_asset(args, ctx: ToolContext) -> dict:
+    """v8.26 工作副本：禁碰=拷贝出去改。把用户资产拷贝为 workcopy/ 副本，原文件不动。"""
+    block = _readonly_block("copy_user_asset")
+    if block:
+        return block
+    if not getattr(ctx.cfg, "ENABLE_WORK_COPY", True):
+        return {"ok": False, "output": "工作副本未开启（ENABLE_WORK_COPY）。"}
+    rel = str(args.get("path") or "").strip()
+    if not rel:
+        return {"ok": False, "output": "请提供 path（要拷贝的相对路径）。"}
+    approved = await _request_approval(
+        ctx, "copy_user_asset",
+        {"command": f"拷贝工作副本 {rel} → workcopy/（原文件不动）", "dangerous": True})
+    if not approved:
+        return {"ok": False, "output": "用户拒绝了工作副本创建。", "meta": {"denied": True}}
+    from . import file_protect as _fp
+    ws = ctx.workspace or ctx.cfg.workspace
+    ok, info = await asyncio.to_thread(
+        _fp.make_workcopy, ws, rel, str(args.get("actor") or "AI"))
+    if not ok:
+        return {"ok": False, "output": str(info)}
+    await _emit(ctx, {"type": "file_changed", "path": info["rel"]})
+    return {"ok": True,
+            "output": (f"已生成工作副本：{info['rel']}（原文件 {info['src']} 保持不变，"
+                       "后续只在工作副本上操作）。"),
+            "meta": {"copy": info["rel"], "src": info["src"]}}
+
+
 async def tool_port_refs(args, ctx: ToolContext) -> dict:
     """v6 隐患 2 修正：精确定位端口号引用（文件:行号+片段），明确禁止盲替。"""
     port = str(args.get("port") or "").strip()
@@ -3407,6 +3564,51 @@ def build_tool_defs(cfg: Config, expert_mode: bool = False, allow_delegate: bool
                 }, []),
             },
         })
+    # v8.25 用户文件保护 + 一键备份 + 重名治理（三层贯通：config字段+defs裁剪+设置对话框SWITCHES）
+    if getattr(cfg, "ENABLE_FULL_BACKUP", True) and not readonly:
+        defs.append({
+            "type": "function",
+            "function": {
+                "name": "backup_workspace",
+                "description": "一键备份完整工作区到 backups/<时间>_full.zip（含data/会话快照，非Git自动备份出口）。用户要求备份时用；动用户资产文件前先建议用户备份。",
+                "parameters": _p({
+                    "label": {"type": "string", "description": "备份标签（默认full，字母数字_-）"},
+                }, []),
+            },
+        })
+    if getattr(cfg, "ENABLE_WORK_COPY", True) and not readonly:
+        defs.append({
+            "type": "function",
+            "function": {
+                "name": "copy_user_asset",
+                "description": "v8.26 工作副本：把工作区文件（尤其用户资产 PPT/Excel/Word/PDF）拷贝为 workcopy/ 下的工作副本（时间-作者-内容命名），原文件保持不变。处理用户资产内容前先征得用户同意再调用。",
+                "parameters": _p({
+                    "path": {"type": "string", "description": "原文件相对路径"},
+                    "actor": {"type": "string", "description": "作者标识（默认AI）"},
+                }, ["path"]),
+            },
+        })
+    if getattr(cfg, "ENABLE_AMBIGUOUS_GUARD", True):
+        defs.append({
+            "type": "function",
+            "function": {
+                "name": "scan_ambiguous_files",
+                "description": "扫描重名/命名不清文件（副本/带(1)/新建未命名等）。copilot或依赖树发现文件名奇怪时必须调用，结果请用户逐组识别。",
+                "parameters": _p({}, []),
+            },
+        })
+        if not readonly:
+            defs.append({
+                "type": "function",
+                "function": {
+                    "name": "quarantine_files",
+                    "description": "把用户确认不要的重名文件备份转移到 backups/quarantine/<时间>/（保留原相对路径，可恢复）。需用户审批。",
+                    "parameters": _p({
+                        "files": {"type": "array", "items": {"type": "string"}, "description": "要转移的相对路径列表"},
+                        "reason": {"type": "string", "description": "原因说明"},
+                    }, ["files"]),
+                },
+            })
     if expert_mode:
         defs.append({
             "type": "function",
@@ -3600,6 +3802,11 @@ TOOL_MATCH = {
     "ui_control_set_text": ["控件输入", "设置控件文本", "输入框填写", "control type", "填写输入框"],
     "ui_control_get_text": ["读取控件文本", "获取控件文本", "控件内容", "control text", "获取文本"],
     "ui_get_tree": ["窗口树", "控件树", "窗口结构", "window tree", "UI结构", "界面结构"],
+    # v8.25 一键备份 + 重名治理
+    "backup_workspace": ["一键备份", "完整备份", "备份工作区", "备份", "backup", "full backup"],
+    "scan_ambiguous_files": ["重名", "重复文件", "命名不清", "文件名奇怪", "副本", "copy", "(1)", "ambiguous", "scan duplicate"],
+    "quarantine_files": ["隔离", "转移", "备份转移", "quarantine", "整理重复文件"],
+    "copy_user_asset": ["工作副本", "生成副本", "拷贝一份", "copy_user_asset", "副本处理"],
     "ui_get_control_info": ["控件信息", "控件详情", "control info", "元素信息"],
 }
 
@@ -3747,6 +3954,11 @@ TOOL_HANDLERS = {
     "memory_record": tool_memory_record,
     "list_checkpoints": tool_list_checkpoints,
     "list_audits": tool_list_audits,
+    # v8.25 一键备份 + 重名治理
+    "backup_workspace": tool_backup_workspace,
+    "scan_ambiguous_files": tool_scan_ambiguous_files,
+    "quarantine_files": tool_quarantine_files,
+    "copy_user_asset": tool_copy_user_asset,
     # ---- v6.6 浏览器控制（外交型）
     "browser_open": tool_browser_open,
     "browser_read": tool_browser_read,
@@ -3805,16 +4017,54 @@ TOOL_HANDLERS = {
 }
 
 
+def _unattended_note(ctx: "ToolContext", tool: str, payload: dict) -> None:
+    """v8.27 不看守模式：危险动作被跳过时记入保留进度台账（工作区 unattended_progress.json）。
+
+    台账随工作区快照往返（漂移上服务器、回本机都接得上）；失败静默（不阻塞主流程）。
+    """
+    try:
+        import json as _json
+        import datetime as _dt
+        from .storage import load_json as _lj, save_json as _sj
+        ws = str(getattr(ctx, "workspace", "") or (ctx.cfg.workspace if ctx.cfg else "") or "")
+        if not ws:
+            return
+        p = Path(ws) / "unattended_progress.json"
+        data = _lj(p, {}) or {}
+        items = data.get("skipped") or []
+        items.append({
+            "ts": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "tool": str(tool),
+            "brief": str(payload.get("command") or payload.get("path")
+                         or payload.get("label") or payload.get("files") or "")[:200],
+        })
+        data["skipped"] = items[-200:]
+        data["updated"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _sj(p, data)
+    except Exception:
+        pass
+
+
 async def _request_approval(ctx: ToolContext, tool: str, payload: dict) -> bool:
     """v5 审批门四模式路由：all（全弹）/ danger（仅危险弹）/ copilot（副驾驶代批）/ free（全放）。
     需要弹 UI 时发出审批请求并等待；超时/异常按拒绝处理并清理 pending。
 
     v6.6 外交型任务硬性规定（独立于 ENABLE_APPROVAL / approval_mode，无条件生效）：
     外交型任务允许全放行（不弹窗），但一旦 AI 检测到不完全符合用户要求就立即拦截。
+    v8.27 不看守模式（ENABLE_UNATTENDED，最高优先）：无人值守不弹审批——非危险动作自动放行，
+    危险动作跳过并记入保留进度台账，绝不阻塞等待。
     """
+    cfg = ctx.cfg
+    # v8.27 不看守模式（最高优先，先于外交型路由）：无人值守不弹审批——
+    # 非危险动作（含外交型工具，其载荷不带 dangerous 标志）自动放行；
+    # 危险动作跳过并记入保留进度台账，绝不阻塞等待（外交型副驾驶 uncertain 最长 600s）。
+    if getattr(cfg, "ENABLE_UNATTENDED", False):
+        if payload.get("dangerous") or is_dangerous(payload):
+            _unattended_note(ctx, tool, payload)
+            return False
+        return True
     if tool in DIPLOMATIC_TOOLS:
         return await _diplomatic_guard(ctx, tool, payload)
-    cfg = ctx.cfg
     if not getattr(cfg, "ENABLE_APPROVAL", True):
         return True
     mode = getattr(cfg, "approval_mode", "danger") or "danger"
@@ -3867,6 +4117,8 @@ async def _request_diff_approval(ctx: ToolContext, rel: str, old: str, new: str)
     超大 diff（>2000 行）跳过预览避免 UI 卡死，直接放行。
     """
     cfg = ctx.cfg
+    if getattr(cfg, "ENABLE_UNATTENDED", False):
+        return True  # v8.28 不看守：diff 预览需人工确认，无人值守直接放行（危险动作仍走台账）
     if not getattr(cfg, "ENABLE_DIFF_PREVIEW", True):
         return True
     # 新文件无对比意义

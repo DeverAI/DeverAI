@@ -69,6 +69,54 @@ def test_term_envs():
         check("persistence readable", tm.get_env(env2["id"]) is not None)
 
 
+# ------------------------------------------------------------------
+# 1.5) v8.26 工作副本单元检查（无 Qt）：make_workcopy + 豁免 + 阻断文案
+# ------------------------------------------------------------------
+def test_file_protect_workcopy():
+    from desktop import file_protect as fp
+
+    with tempfile.TemporaryDirectory() as td:
+        # 状态文件重定向到临时目录，不污染真实 data/file_protect.json
+        fp.STATE_PATH = Path(td) / "fp_state.json"
+        src = Path(td) / "报告.pptx"
+        src.write_bytes(b"PK\x03\x04fake-pptx")
+        ok, info = fp.make_workcopy(td, "报告.pptx", "AI")
+        check("workcopy 创建成功", ok and isinstance(info, dict))
+        if ok:
+            copy_rel = str(info.get("rel") or "")
+            check("workcopy 命名=时间-作者-内容",
+                  copy_rel.startswith("workcopy/") and "-AI-" in copy_rel)
+            try:
+                check("workcopy 内容一致且原文件不动",
+                      (Path(td) / copy_rel).read_bytes() == b"PK\x03\x04fake-pptx"
+                      and src.read_bytes() == b"PK\x03\x04fake-pptx")
+            except OSError as e:
+                check(f"workcopy 内容读取异常: {e}", False)
+        check("workcopy/ 豁免用户资产判定",
+              not fp.is_user_asset("workcopy/20260905-AI-报告.pptx"))
+        check("workcopy/.. 穿越不豁免（阶段3 修复）",
+              fp.is_user_asset("workcopy/../报告.pptx"))
+        check("workcopy/.. 穿越仍被阻断",
+              bool(fp.check_ai_write_block(td, "workcopy/../报告.pptx")))
+        check("原件仍判用户资产", fp.is_user_asset("报告.pptx"))
+        reason = fp.check_ai_write_block(td, "报告.pptx")
+        check("阻断文案引导 copy_user_asset",
+              bool(reason) and "copy_user_asset" in reason)
+        ok2, err2 = fp.make_workcopy(td, "不存在.pptx")
+        check("不存在的文件拒绝", (not ok2) and isinstance(err2, str) and bool(err2))
+        ok3, err3 = fp.make_workcopy(td, "../outside.pptx")
+        check("越界路径拒绝", (not ok3) and isinstance(err3, str) and bool(err3))
+        ok4, err4 = fp.make_workcopy(td, "workcopy/20260905-AI-报告.pptx")
+        check("副本目录内不再拷贝", (not ok4) and isinstance(err4, str) and bool(err4))
+        (Path(td) / "config.json").write_text("{}", encoding="utf-8")
+        ok5, err5 = fp.make_workcopy(td, "config.json")
+        check("敏感文件拒绝拷贝（阶段3）", (not ok5) and isinstance(err5, str) and bool(err5))
+        (Path(td) / "data").mkdir()
+        (Path(td) / "data" / "x.json").write_text("{}", encoding="utf-8")
+        ok6, err6 = fp.make_workcopy(td, "data/x.json")
+        check("敏感目录拒绝拷贝（阶段3）", (not ok6) and isinstance(err6, str) and bool(err6))
+
+
 def test_session_store():
     from desktop import sessions as sm
 
@@ -188,6 +236,47 @@ def test_gui():
           and ("收到，这是回复乙。" in html_txt))
     check("轨迹面板随切换重建", win.trace_panel is not None)
 
+    # v8.29 变更栏：渲染 + 去重 + 点击引用打开（信号改接捕获，避免真实打开副作用）
+    from PyQt6.QtCore import QUrl as _QUrl
+    win.chat.render_change_log([{"path": "smoke_chg.txt", "action": "write_file"},
+                                {"path": "smoke_chg.txt", "action": "edit_file"},
+                                {"path": "smoke_chg.txt", "action": "write_file"}])
+    app.processEvents()
+    check("变更栏渲染且去重", "变更栏 · 2 个文件" in win.chat.view.toPlainText())
+    check("变更栏引用锚存在", "act:openfile:smoke_chg.txt" in win.chat.view.toHtml())
+    win.chat.open_file_requested.disconnect()
+    _opened = []
+    win.chat.open_file_requested.connect(lambda rel: _opened.append(rel))
+    win.chat._on_anchor(_QUrl("act:openfile:smoke_chg.txt"))
+    app.processEvents()
+    check("变更栏点击引用发出打开信号", _opened == ["smoke_chg.txt"])
+    win.chat.open_file_requested.disconnect()
+    win.chat.open_file_requested.connect(win._open_file)
+
+    # v8.30 方案1：文件入库（拖拽/粘贴共用 _ingest_paths）→ uploads/ + 引用条
+    from desktop import uploads_ingest as _uing  # noqa: F401 确认可导入
+    _wsdir = tmp / "ws30"
+    _wsdir.mkdir(parents=True, exist_ok=True)
+    _old_ws = win.cfg.workspace
+    win.cfg.workspace = str(_wsdir)
+    _drop = tmp / "drop_src.txt"
+    _drop.write_text("dropped", encoding="utf-8")
+    win.chat.take_quotes()
+    win._ingest_paths([str(_drop)])
+    app.processEvents()
+    _q = win.chat._quotes
+    check("入库：文件落 uploads/ 且引用条登记",
+          bool(_q) and str(_q[0]["label"]).startswith("uploads/")
+          and (_wsdir / _q[0]["label"]).is_file()
+          and (_wsdir / _q[0]["label"]).read_text(encoding="utf-8") == "dropped")
+    _sec = tmp / "config.json"
+    _sec.write_text("{}", encoding="utf-8")
+    win._ingest_paths([str(_sec)])
+    app.processEvents()
+    check("入库：敏感文件名拒绝（引用条不增加）", len(win.chat._quotes) == 1)
+    win.chat.take_quotes()
+    win.cfg.workspace = _old_ws
+
     # busy 守卫：运行中禁止切换
     win._busy = True
     other = next(s["id"] for s in win.sessions.sessions() if s["id"] != win.sessions.active_id)
@@ -253,6 +342,229 @@ def test_gui():
     td.cleanup()
 
 
+# ------------------------------------------------------------------
+# 1.6) v8.27 不看守模式 + 密钥信封 + 漂移上传打包（无 Qt）
+# ------------------------------------------------------------------
+def test_unattended_and_keys():
+    import asyncio
+    from desktop import sync as _sync
+    from desktop.config import Config
+    from desktop.tools import ToolContext, _request_approval
+
+    with tempfile.TemporaryDirectory() as td:
+        # drift_last_push 重定向：build/mark 走 sync.DATA_DIR，临时化防污染真实 data/
+        real_data = _sync.DATA_DIR
+        _sync.DATA_DIR = Path(td) / "data"
+        try:
+            cfg = Config()
+            cfg.workspace = td
+            cfg.ENABLE_UNATTENDED = True
+            ctx = ToolContext(cfg=cfg, workspace=td)
+            ok = asyncio.run(_request_approval(ctx, "run_command", {"command": "echo hi"}))
+            check("不看守：非危险自动放行", ok is True)
+            ok2 = asyncio.run(_request_approval(
+                ctx, "run_command", {"command": "rm -rf x", "dangerous": True}))
+            check("不看守：危险动作跳过", ok2 is False)
+            check("不看守：保留进度台账落工作区",
+                  (Path(td) / "unattended_progress.json").is_file())
+            cfg.ENABLE_UNATTENDED = False
+            ok3 = asyncio.run(_request_approval(
+                ctx, "run_command", {"command": "rm -rf x", "dangerous": True}))
+            check("关闭不看守：危险动作走原审批路径拒绝", ok3 is False)
+
+            cfg2 = Config()
+            cfg2.workspace = td
+            cfg2.api_key = "sk-test-123"
+            cfg2.api_base_url = "https://api.test/v1"
+            cfg2.model = "test-model"
+            # 密钥信封需要 cryptography（requirements.txt 已含）；缺失时 fail-closed 断言
+            try:
+                import cryptography  # noqa: F401
+                has_crypto = True
+            except ImportError:
+                has_crypto = False
+            if has_crypto:
+                enc = _sync.export_keys_envelope(cfg2, "pw123")
+                check("密钥信封非空且带类型标记", bool(enc) and '"deverai-keys"' in enc)
+                keys = _sync.import_keys_envelope(enc, "pw123")
+                check("密钥信封解密回环", keys.get("api_key") == "sk-test-123"
+                      and keys.get("model") == "test-model")
+                try:
+                    _sync.import_keys_envelope(enc, "wrong-pw")
+                    check("密钥信封错口令拒绝", False)
+                except ValueError:
+                    check("密钥信封错口令拒绝", True)
+                check("无口令不上传密钥", _sync.export_keys_envelope(cfg2, "") == "")
+            else:
+                check("无 cryptography 时 fail-closed：密钥不上传（不降级混淆）",
+                      _sync.export_keys_envelope(cfg2, "pw123") == "")
+
+            (Path(td) / "a.txt").write_text("hello", encoding="utf-8")
+            (Path(td) / "sub").mkdir()
+            (Path(td) / "sub" / "b.py").write_text("x=1", encoding="utf-8")
+            up_full = _sync.build_drift_upload(cfg2, "full")
+            check("完整上传：工作区 zip 非空", bool(up_full.get("ws_b64")))
+            up_min = _sync.build_drift_upload(cfg2, "minimal")
+            check("最简上传：首次无基准=全量", bool(up_min.get("ws_b64")))
+            _sync.mark_drift_pushed()
+            up_min2 = _sync.build_drift_upload(cfg2, "minimal")
+            check("最简上传：推送后无变更则增量为空", up_min2.get("ws_b64") == "")
+            # 阶段3：敏感名不入包 + cutoff 基准 + manifest
+            (Path(td) / "data").mkdir(exist_ok=True)
+            (Path(td) / "data" / "config.json").write_text("{}", encoding="utf-8")
+            up_s = _sync.build_drift_upload(cfg2, "full")
+            import base64 as _b64
+            import io as _io
+            import zipfile as _zipf
+            names = set()
+            if up_s.get("ws_b64"):
+                with _zipf.ZipFile(_io.BytesIO(
+                        _b64.standard_b64decode(up_s["ws_b64"]))) as zf:
+                    names = set(zf.namelist())
+            check("敏感文件不入上传包（data/config.json）",
+                  bool(names) and "data/config.json" not in names
+                  and "config.json" not in names)
+            check("上传含完整清单 manifest", bool(up_s.get("manifest"))
+                  and "a.txt" in str(up_s.get("manifest")))
+            import os as _os
+            import time as _time
+            _os.utime(Path(td) / "a.txt", (_time.time() - 3600,) * 2)
+            cut = _time.time()
+            _sync.mark_drift_pushed(cut)
+            (Path(td) / "c.txt").write_text("new", encoding="utf-8")
+            up_inc = _sync.build_drift_upload(cfg2, "minimal")
+            inc_names = set()
+            if up_inc.get("ws_b64"):
+                with _zipf.ZipFile(_io.BytesIO(
+                        _b64.standard_b64decode(up_inc["ws_b64"]))) as zf:
+                    inc_names = set(zf.namelist())
+            check("增量基准：cutoff 前旧文件不再上传", "a.txt" not in inc_names)
+            check("增量基准：cutoff 后新文件入包", "c.txt" in inc_names)
+        finally:
+            _sync.DATA_DIR = real_data
+
+
+# ------------------------------------------------------------------
+# 1.7) v8.28 checkpoint 版本保留可配（默认每文件上两版，C 盘友好）
+# ------------------------------------------------------------------
+def test_checkpoint_keep():
+    from desktop import checkpoint as ck
+
+    with tempfile.TemporaryDirectory() as td:
+        old_dir, old_keep = ck.CHECKPOINT_DIR, ck._KEEP_OVERRIDE
+        ck.CHECKPOINT_DIR = Path(td)
+        ck._KEEP_OVERRIDE = 2
+        try:
+            for i in range(4):
+                ck.save_checkpoint("a.txt", f"v{i}", task_id="t", source="ai")
+            vers = ck.list_versions("a.txt")
+            check("checkpoint 每文件保留 2 版（v8.28）", isinstance(vers, list) and len(vers) <= 2)
+        finally:
+            ck.CHECKPOINT_DIR, ck._KEEP_OVERRIDE = old_dir, old_keep
+
+
+# ------------------------------------------------------------------
+# 1.8) v8.29 变更栏：桌面 Agent 文件改动采集（无 Qt；渲染冒烟在 test_gui 内）
+# ------------------------------------------------------------------
+def test_changes_bar():
+    import asyncio
+    import json as _json
+    from desktop.config import Config
+    from desktop.agent import Agent
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg = Config()
+        cfg.workspace = td
+        cfg.ENABLE_DIFF_PREVIEW = False   # 免 diff 审批阻塞
+        cfg.ENABLE_CHECKPOINT = False     # 不写真实 data/checkpoints
+        cfg.ENABLE_SESSION_SNAP = False
+        cfg.ENABLE_UNATTENDED = True      # 审批门自动放行（非危险），测试不挂起
+        events = []
+
+        async def _cap(ev):
+            events.append(ev)
+
+        ag = Agent(cfg, emit=_cap)
+
+        async def _go():
+            await ag._execute_tools([{
+                "id": "c1", "name": "write_file",
+                "arguments": _json.dumps({"path": "a.txt", "content": "hi"}),
+            }], [])
+            await ag._execute_tools([{
+                "id": "c2", "name": "edit_file",
+                "arguments": _json.dumps({"path": "a.txt", "old_string": "hi",
+                                          "new_string": "ho"}),
+            }], [])
+
+        asyncio.run(_go())
+        check("变更采集：write/edit 依次入列",
+              len(ag._changes) == 2
+              and ag._changes[0] == {"path": "a.txt", "action": "write_file"}
+              and ag._changes[1] == {"path": "a.txt", "action": "edit_file"})
+        check("变更采集：工具结果事件正常发出",
+              any(e.get("type") == "tool_result" and e.get("ok") for e in events))
+
+
+# ------------------------------------------------------------------
+# 1.9) v8.30 上传入库（方案1）：ingest 单元 + checkpoint 跳过 uploads/
+# ------------------------------------------------------------------
+def test_uploads_ingest():
+    from desktop import uploads_ingest as ui
+    from desktop import checkpoint as ck
+
+    with tempfile.TemporaryDirectory() as td:
+        ws = Path(td) / "ws"
+        ws.mkdir(parents=True)
+        src = Path(td) / "报告.txt"
+        src.write_text("内容甲", encoding="utf-8")
+        ok, rel = ui.ingest_file(str(ws), str(src))
+        check("入库：落 uploads/ 且内容一致",
+              ok and rel.startswith("uploads/")
+              and (ws / rel).is_file()
+              and (ws / rel).read_text(encoding="utf-8") == "内容甲")
+        ok2, rel2 = ui.ingest_file(str(ws), str(src))
+        check("入库：同名自动加序号",
+              ok2 and rel2 != rel and Path(rel2).name != Path(rel).name)
+        sec = Path(td) / "config.json"
+        sec.write_text("{}", encoding="utf-8")
+        ok3, info3 = ui.ingest_file(str(ws), str(sec))
+        check("入库：敏感文件名拒绝", not ok3 and "敏感" in info3
+              and not list((ws / "uploads").rglob("config.json")))
+        key = Path(td) / "server.pem"
+        key.write_text("k", encoding="utf-8")
+        ok4, info4 = ui.ingest_file(str(ws), str(key))
+        check("入库：密钥后缀拒绝", not ok4 and "敏感" in info4)
+        check("入库：源不存在拒绝", ui.ingest_file(str(ws), str(Path(td) / "nope.txt"))[0] is False)
+        old_cap = ui.MAX_UPLOAD_BYTES
+        ui.MAX_UPLOAD_BYTES = 4
+        try:
+            ok5, info5 = ui.ingest_file(str(ws), str(src))
+            check("入库：超上限拒绝", not ok5 and "上限" in info5)
+        finally:
+            ui.MAX_UPLOAD_BYTES = old_cap
+        # checkpoint 跳过 uploads/（C 盘约束），其余路径照常
+        old_dir = ck.CHECKPOINT_DIR
+        ck.CHECKPOINT_DIR = Path(td) / "ck"
+        try:
+            r1 = ck.save_checkpoint("uploads/a.txt", "x", task_id="t", source="ai")
+            r2 = ck.save_checkpoint("other/a.txt", "x", task_id="t", source="ai")
+            check("checkpoint：uploads/ 前缀跳过", r1 is None and r2 is not None)
+            # v8.31 审计：Windows 大小写不敏感，Uploads/ 变体同样跳过
+            r3 = ck.save_checkpoint("Uploads/a.txt", "x", task_id="t", source="ai")
+            check("checkpoint：Uploads/ 大小写变体同样跳过", r3 is None)
+            # v8.31 审计：入库文件必须拿到新 mtime（drift minimal 按 mtime 筛增量），
+            # copy2 保留源 mtime 会让老文件永远进不了增量包
+            old_src = Path(td) / "old.bin"
+            old_src.write_bytes(b"old")
+            os.utime(old_src, (1577836800, 1577836800))  # 2020-01-01
+            ok6, rel6 = ui.ingest_file(str(ws), str(old_src))
+            check("入库：mtime 刷新（drift 增量可见）",
+                  ok6 and (ws / rel6).stat().st_mtime > 1700000000)
+        finally:
+            ck.CHECKPOINT_DIR = old_dir
+
+
 def main():
     failures = 0
     try:
@@ -269,6 +581,41 @@ def main():
         import traceback
         traceback.print_exc()
         FAILED.append(f"session_store 异常: {e}")
+    try:
+        test_file_protect_workcopy()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"file_protect_workcopy 异常: {e}")
+    try:
+        test_unattended_and_keys()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"unattended_and_keys 异常: {e}")
+    try:
+        test_checkpoint_keep()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"checkpoint_keep 异常: {e}")
+    try:
+        test_changes_bar()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"changes_bar 异常: {e}")
+    try:
+        test_uploads_ingest()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"uploads_ingest 异常: {e}")
     try:
         test_gui()
     except Exception as e:  # noqa: BLE001

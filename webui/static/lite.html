@@ -675,6 +675,7 @@ function buildSystemPrompt() {
     '所有文件路径都是相对路径，禁止使用绝对路径。',
     '小修改用 edit_file（精确替换），新文件用 write_file。',
     '修改前先 read_file 确认原文。遇到失败要分析原因、修正重试。',
+    '用户文件保护：PPT/Excel/Word/PDF等用户手工资产AI不允许直接覆盖或用命令触碰；被拦截时提示用户一键备份并由用户手动处理。',
     '回复要简洁，不要复述全部代码。',
   ].join('\n');
 }
@@ -691,6 +692,19 @@ function getToolDefs() {
 }
 
 async function executeTool(name, args) {
+  function isUserAsset(rel) {
+    const m = String(rel||'').toLowerCase().match(/\.[a-z0-9]+$/);
+    if (!m) return false;
+    return ['.ppt','.pptx','.pot','.potx','.pps','.ppsx','.odp','.xls','.xlsx','.xlsm','.csv','.ods','.doc','.docx','.odt','.rtf','.wps','.pdf','.psd','.ai','.sketch','.fig','.mp4','.mov','.avi','.mkv','.zip','.rar','.7z'].includes(m[0]);
+  }
+  function commandTouchesUserAsset(cmd) {
+    const toks = String(cmd||'').match(/[^\s"'<>|]+?\.[A-Za-z0-9]{2,5}/g) || [];
+    return toks.some(t => {
+      const clean = t.trim().replace(/^["']|["']$/g, '');
+      const base = clean.replace(/\\/g, '/').split('/').pop();
+      return isUserAsset(base);
+    });
+  }
   try {
     switch(name) {
       case 'read_file': {
@@ -699,10 +713,12 @@ async function executeTool(name, args) {
       }
       case 'write_file': {
         if (args.content == null) return { ok:false, output:'write_file 缺少 content 参数' };
+        if (isUserAsset(args.path)) return { ok:false, output:'[用户文件保护] '+args.path+' 疑似用户手工资产，AI不允许直接覆盖。请提示用户备份并手动处理。' };
         await api('/api/bridge/fs/write', { method:'POST', body:{ path:args.path, content:args.content }});
         return { ok:true, output:'已写入 '+args.path };
       }
       case 'edit_file': {
+        if (isUserAsset(args.path)) return { ok:false, output:'[用户文件保护] '+args.path+' 疑似用户手工资产，AI不允许直接编辑。请提示用户备份并手动处理。' };
         const r = await api('/api/bridge/fs/read?path='+encodeURIComponent(args.path));
         const content = r.content||'';
         const oldS = String(args.old_string||'');
@@ -723,6 +739,7 @@ async function executeTool(name, args) {
         return { ok:true, output:'匹配 '+r.count+' 处:\n'+lines.join('\n') };
       }
       case 'run_command': {
+        if (commandTouchesUserAsset(args.command||'')) return { ok:false, output:'[用户文件保护] 命令涉及用户手工资产，AI不允许执行。请提示用户备份并手动执行。' };
         // v8.11 检修：本地预判清单与后端 is_dangerous_cmd 同源；即使本地漏判，
         // 后端 403「危险命令」时会二次确认后带 danger_ok 重试，不会被永久卡死。
         const DANGER_RE = /\brm\s+-[a-z]*[rf]|\bdel\s+\/[sfqi]|\brmdir\s+\/s|\brd\s+\/s\b|\bformat\b|\bdiskpart\b|\bmkfs\b|\bdd\s+if=|:\(\)\{|\breg\s+delete\b|\bshutdown\b|\breboot\b|\bpowershell\s+-enc|Invoke-Expression|\btaskkill\b(?=[\s\S]*\s\/f(?=\s|$))(?=[\s\S]*\s\/(?:im|pid)\b)|>\s*\/dev\/|\bgit\s+push\s+[\s\S]*--force(?!-with-lease)|\bdrop\s+(table|database)|\btruncate\s+table|\bpython(?:3)?\s+-c\b|\bpy\s+-c\b|\bpowershell\s+(?:-[a-z]+\s+)*-(?:command|enc)\b|\bcmd(?:\.exe)?\s+\/[cq]\b|\bRemove-Item\b[\s\S]*-Recurse\b|\bshutil\.rmtree\b|\bos\.remove\b|\b(?:Remove-Item|ri|rm|del|erase|rmdir|rd)\b[^|\n;&]*\s-(?:recurse|r|rf|fr)\b|\bgit\s+clean\b[^|\n;&]*\s-[a-z]*f/i;

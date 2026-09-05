@@ -67,6 +67,34 @@ function isDangerousCommand(command) {
   return false;
 }
 
+// v8.25 用户文件保护（与桌面 file_protect.USER_SUFFIXES 同源）：用户资产后缀AI禁写禁命令
+const USER_ASSET_SUFFIXES = new Set([
+  '.ppt', '.pptx', '.pot', '.potx', '.pps', '.ppsx', '.odp',
+  '.xls', '.xlsx', '.xlsm', '.csv', '.ods',
+  '.doc', '.docx', '.odt', '.rtf', '.wps',
+  '.pdf', '.psd', '.ai', '.sketch', '.fig',
+  '.mp4', '.mov', '.avi', '.mkv', '.zip', '.rar', '.7z',
+]);
+function _isUserAsset(rel) {
+  const s = String(rel || '').toLowerCase();
+  // v8.26：workcopy/ 首段且无「..」穿越/盘符 = AI 工作副本，豁免保护（与桌面 _is_workcopy 同语义）
+  const parts = s.replace(/\\/g, '/').split('/').filter(Boolean);
+  if (parts.length && parts[0] === 'workcopy' && !parts.includes('..') && !s.includes(':')) return false;
+  const m = s.match(/\.[a-z0-9]+$/);
+  return !!(m && USER_ASSET_SUFFIXES.has(m[0]));
+}
+function _commandTouchesUserAsset(command) {
+  const cmd = String(command || '');
+  if (!cmd) return false;
+  // v8.25修复：按空白/引号切分token（旧正则把"libreoffice a.pptx"整段当文件名导致漏判）
+  const toks = cmd.match(/[^\s"'<>|]+?\.[A-Za-z0-9]{2,5}/g) || [];
+  return toks.some((t) => {
+    const clean = t.trim().replace(/^["']|["']$/g, '');
+    const base = clean.replace(/\\/g, '/').split('/').pop();
+    return _isUserAsset(base);
+  });
+}
+
 async function requestApproval(payload, cfg) {
   if (!cfg || cfg.ENABLE_APPROVAL === false) return true; // 开关关闭全放行
   const mode = String(cfg.approval_mode || 'danger');
@@ -1053,6 +1081,46 @@ function getToolDefs(extra = {}) {
       },
     },
     // v8.13.1：Agent 可见开发者网络面板（API 控制台）——只读、敏感字段打码
+    // v8.25 一键备份 + 重名治理（与桌面 backup_workspace/scan_ambiguous_files/quarantine_files 同语义）
+    {
+      type: 'function',
+      function: {
+        name: 'backup_workspace',
+        description: '一键备份完整工作区到 backups/<时间>_full.zip。用户要求备份时用；动用户资产文件前先建议备份。',
+        parameters: { type: 'object', properties: { label: { type: 'string', description: '备份标签（默认full）' } }, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'copy_user_asset',
+        description: 'v8.26 工作副本：把工作区文件（尤其用户资产 PPT/Excel/Word/PDF）拷贝为 workcopy/ 下的工作副本（时间-作者-内容命名），原文件保持不变。处理用户资产内容前先征得用户同意再调用。',
+        parameters: { type: 'object', properties: { path: { type: 'string', description: '原文件相对路径' }, actor: { type: 'string', description: '作者标识（默认AI）' } }, required: ['path'] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'scan_ambiguous_files',
+        description: '扫描重名/命名不清文件（副本/copy/(1)/新建未命名等）。发现文件名奇怪时必须调用，结果请用户逐组识别。',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'quarantine_files',
+        description: '把用户确认的重名文件备份转移到 backups/quarantine/<时间>/（可恢复）。需用户审批确认。',
+        parameters: {
+          type: 'object',
+          properties: {
+            files: { type: 'array', items: { type: 'string' }, description: '要转移的相对路径列表' },
+            reason: { type: 'string', description: '原因说明' },
+          },
+          required: ['files'],
+        },
+      },
+    },
     {
       type: 'function',
       function: {
@@ -1158,7 +1226,7 @@ function getToolDefs(extra = {}) {
   // 防止 agent_mode=chat 时 LLM 仍拿到 write/run_command/delete 等写工具。
   const CHAT_READONLY_TOOLS = new Set([
     'workspace_info', 'worktree_list', 'list_dir', 'read_file', 'grep', 'glob',
-    'search_assets', 'inspect_asset', 'list_checkpoints',
+    'search_assets', 'inspect_asset', 'list_checkpoints', 'scan_ambiguous_files',
     'file_search', 'search_tool', 'web_search', 'browser_read',
     'notepad_read', 'notepad_list', 'list_tools', 'list_tool_bugs', 'ui_review',
     'network_list', 'network_curl',
@@ -1179,6 +1247,7 @@ function getToolDefs(extra = {}) {
     notepad_list: cfg.ENABLE_NOTEPAD,
     notepad_clear: cfg.ENABLE_NOTEPAD,
     list_checkpoints: cfg.ENABLE_CHECKPOINT,
+    copy_user_asset: cfg.ENABLE_WORK_COPY !== false,
     // v8.13：delete_file 与桌面一致按 ALLOW_AI_DELETE 开关裁剪（关=不注册给 LLM）
     delete_file: cfg.ALLOW_AI_DELETE,
     // v8.5.x 审查修复：补齐 AOE/子Agent/资产银行的开关裁剪（否则开关关闭工具仍注册给 LLM）
@@ -1296,6 +1365,11 @@ async function executeTool(name, args, ctx) {
       case 'notepad_list': return await execNotepadList(args);
       case 'notepad_clear': return await execNotepadClear(args);
       case 'list_checkpoints': return await execListCheckpoints(args);
+      // v8.25 一键备份 + 重名治理
+      case 'backup_workspace': return await execBackupWorkspace(args);
+      case 'scan_ambiguous_files': return await execScanAmbiguous();
+      case 'quarantine_files': return await execQuarantineFiles(args, ctx, cfg);
+      case 'copy_user_asset': return await execCopyUserAsset(args, ctx, cfg);
       // v8.13.1：Agent 可见开发者网络面板（只读、打码）
       case 'network_list': return execNetworkList(args);
       case 'network_curl': return execNetworkCurl(args);
@@ -1321,6 +1395,26 @@ async function executeTool(name, args, ctx) {
 }
 
 /* ---------- 各工具实现 ---------- */
+
+/* v8.26 工作副本：禁碰=拷贝出去改，原内容不修改 */
+async function execCopyUserAsset(args, ctx, cfg) {
+  if (cfg && cfg.ENABLE_WORK_COPY === false) return { ok: false, output: '工作副本未开启（ENABLE_WORK_COPY）。' };
+  if (!(FS.mode === 'bridge' && FS.bridge.authorized)) {
+    return { ok: false, output: '需要命令桥授权才能创建工作副本。' };
+  }
+  const rel = normPath(args.path || '');
+  if (!rel) return { ok: false, output: 'path 不能为空' };
+  const allowed = await requestApproval({ command: `拷贝工作副本 ${rel} → workcopy/（原文件不动）`, path: rel, tool: 'copy_user_asset', dangerous: true }, cfg);
+  if (!allowed) return { ok: false, output: '用户拒绝了工作副本创建。', meta: { denied: true } };
+  try {
+    const r = await api('/api/bridge/fs/workcopy', { method: 'POST', body: { path: rel, actor: String(args.actor || 'AI') } });
+    if (!r || !r.ok) return { ok: false, output: '工作副本创建失败' };
+    Tree.refresh().catch(() => {});
+    return { ok: true, output: `已生成工作副本：${r.copy}（原文件 ${r.src} 保持不变，后续只在副本上操作）。`, meta: { copy: r.copy, src: r.src } };
+  } catch (e) {
+    return { ok: false, output: '工作副本创建失败: ' + String((e && e.message) || e) };
+  }
+}
 
 /* v8.5 批次1：文件级 checkpoint 快照 + 依赖树更新（写文件前自动备份原内容，防误改丢数据） */
 async function snapCheckpointBefore(rel, cfg, ctx) {
@@ -1584,6 +1678,10 @@ async function execReadFile(args) {
 async function execWriteFile(args, ctx) {
   const cfg = (ctx && ctx.config) || {};
   const rel = normPath(args.path || '');
+  // v8.25 用户文件保护（与桌面/后端同源）：用户资产AI禁写
+  if (cfg.ENABLE_USER_FILE_PROTECT !== false && _isUserAsset(rel)) {
+    return { ok: false, output: `[用户文件保护] ${rel} 疑似用户手工资产（Office/PDF/二进制），AI不允许直接覆盖。请先提示用户一键备份完整工作区，并由用户手动处理。` };
+  }
   // v8.13：content 缺失显式报错，避免 String(undefined) 的“9 字符”假象并落空文件
   if (args.content == null) return { ok: false, output: 'write_file 缺少 content 参数' };
   const content = String(args.content);
@@ -1607,6 +1705,10 @@ async function execWriteFile(args, ctx) {
 async function execEditFile(args, ctx) {
   const cfg = (ctx && ctx.config) || {};
   const rel = normPath(args.path || '');
+  // v8.25 用户文件保护
+  if (cfg.ENABLE_USER_FILE_PROTECT !== false && _isUserAsset(rel)) {
+    return { ok: false, output: `[用户文件保护] ${rel} 疑似用户手工资产，AI不允许直接编辑。请先提示用户一键备份，并由用户手动处理。` };
+  }
   const data = await readFile(rel);
   const content = data.content || '';
   const oldS = String(args.old_string || '');
@@ -1655,6 +1757,10 @@ async function execDelete(args, ctx, cfg) {
   }
   const rel = normPath(args.path || '');
   if (!rel) return { ok: false, output: 'path 不能为空' };
+  // v8.25 用户文件保护：用户资产AI禁删
+  if (cfg.ENABLE_USER_FILE_PROTECT !== false && _isUserAsset(rel)) {
+    return { ok: false, output: `[用户文件保护] ${rel} 疑似用户手工资产，AI不允许删除。请用户手动处理或走重名隔离流程。` };
+  }
   const blocked = await guardBlocked(ctx); // v8.5: 只读拦截
   if (blocked) return { ok: false, output: '删除被拦截：' + blocked };
   // 破坏性删除必须走审批门（对齐 run_command/app_screenshot），否则 approval_mode=all 形同虚设
@@ -1787,6 +1893,10 @@ async function execRunCommand(args, ctx, cfg) {
   if (blocked) return { ok: false, output: '命令执行被拦截：' + blocked };
   const command = String(args.command || '').trim();
   if (!command) return { ok: false, output: 'command 不能为空' };
+  // v8.25 用户文件保护：命令串提及用户资产文件名直接拦截（后端同样会拦）
+  if (cfg.ENABLE_USER_FILE_PROTECT !== false && _commandTouchesUserAsset(command)) {
+    return { ok: false, output: '[用户文件保护] 命令涉及用户手工资产（PPT/Excel/Word/PDF等），AI不允许执行。请先提示用户一键备份，并由用户手动执行。' };
+  }
   // v8.13：dangerOk 只应在「本地判定危险且用户已确认」时为 true。
   // 本地未判危险的命令保持 false——若后端命中额外危险模式返回 403，再二次确认重试，
   // 避免前端漏判时零确认执行（P1 修复）。
@@ -2616,6 +2726,49 @@ async function execListCheckpoints(args) {
     return { ok: true, output: `最近 checkpoint（共 ${files.length} 个文件）:\n` + lines.join('\n'), meta: { count: files.length } };
   } catch (e) {
     return { ok: false, output: '读取 checkpoint 失败: ' + String((e && e.message) || e) };
+  }
+}
+
+/* ---------- v8.25：一键备份 + 重名治理 ---------- */
+async function execBackupWorkspace(args) {
+  if (!(FS.mode === 'bridge' && FS.bridge.authorized)) {
+    return { ok: false, output: '需要命令桥授权才能一键备份。' };
+  }
+  try {
+    const r = await api('/api/bridge/backup/full', { method: 'POST', body: { label: String((args && args.label) || 'full') } });
+    return { ok: true, output: `已一键备份完整工作区：${r.path}（${r.count} 个文件）`, meta: { path: r.path, count: r.count } };
+  } catch (e) {
+    return { ok: false, output: '一键备份失败: ' + String((e && e.message) || e) };
+  }
+}
+async function execScanAmbiguous() {
+  if (!(FS.mode === 'bridge' && FS.bridge.authorized)) {
+    return { ok: false, output: '需要命令桥授权才能扫描重名文件。' };
+  }
+  try {
+    const r = await api('/api/bridge/protect/scan');
+    const groups = (r && r.groups) || [];
+    if (!groups.length) return { ok: true, output: '未发现重名/命名不清文件。', meta: { count: 0 } };
+    const lines = groups.slice(0, 20).map((g) => `- [${g.group}] ${g.reason}\n  ` + g.files.slice(0, 8).join('\n  '));
+    return { ok: true, output: `发现 ${r.count} 组重名/命名不清文件，请用户逐组识别（哪个保留、其余备份/转移）：\n` + lines.join('\n'), meta: { count: r.count } };
+  } catch (e) {
+    return { ok: false, output: '扫描重名文件失败: ' + String((e && e.message) || e) };
+  }
+}
+async function execQuarantineFiles(args, ctx, cfg) {
+  const files = Array.isArray(args && args.files) ? args.files.filter((x) => String(x || '').trim()) : [];
+  if (!files.length) return { ok: false, output: '请提供 files（要备份/转移的相对路径列表）。' };
+  if (!(FS.mode === 'bridge' && FS.bridge.authorized)) {
+    return { ok: false, output: '需要命令桥授权才能备份转移。' };
+  }
+  if (!confirm(`备份转移 ${files.length} 个文件到 backups/quarantine/<时间>/？\n` + files.slice(0, 10).join('\n'))) {
+    return { ok: false, output: '用户拒绝了备份转移操作。', meta: { denied: true } };
+  }
+  try {
+    const r = await api('/api/bridge/protect/quarantine', { method: 'POST', body: { files, reason: String((args && args.reason) || '') } });
+    return { ok: true, output: `已备份转移 ${r.moved.length} 个文件到 ${r.dir}`, meta: { dir: r.dir, moved: r.moved } };
+  } catch (e) {
+    return { ok: false, output: '备份转移失败: ' + String((e && e.message) || e) };
   }
 }
 

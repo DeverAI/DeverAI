@@ -35,9 +35,22 @@ def save_json(path: Path, data: Any) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def save_text(path: Path, text: str) -> None:
+def sniff_crlf(path: Path) -> bool:
+    """v8.26：探测既有文件是否 CRLF 行尾（读前 64KB 判断）。文件不存在返回 False。与桌面同名语义一致。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(65536)
+        return b"\r\n" in head
+    except OSError:
+        return False
+
+
+def save_text(path: Path, text: str, crlf: bool | None = None) -> None:
+    """原子写文本。v8.26：crlf=True 时按原文件 CRLF 风格写回（对齐桌面行尾保持纪律）。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if crlf:
+        text = text.replace("\r\n", "\n").replace("\n", "\r\n")
     tmp = _tmp_path(path)
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as f:

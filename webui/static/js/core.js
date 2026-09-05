@@ -279,6 +279,8 @@ const CFG_DEFAULT = {
   ENABLE_SESSION_SNAP: true,
   ENABLE_DEP_TREE: true,
   ENABLE_CTX_EXPERT: true,
+  // v8.26：工作副本（copy_user_asset，禁碰=拷贝出去改）
+  ENABLE_WORK_COPY: true,
   // v8.5.7 补齐：联网搜索 / 浏览器控制 / 暂存便签
   ENABLE_WEB_SEARCH: true,
   ENABLE_BROWSER: true,

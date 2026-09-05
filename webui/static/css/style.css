@@ -1733,3 +1733,28 @@ html[data-theme="dark"] .bubble pre { background: var(--bg-2); }
   border: 1px dashed var(--border-2);
 }
 .st-new:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+
+/* ============ v8.28 变更栏 + 引用卡片 ============ */
+.chlog { display: flex; flex-direction: column; gap: 6px; }
+.chlog-head { display: flex; align-items: center; }
+.ref-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; flex-wrap: wrap; position: relative; }
+.ref-name { font-family: var(--mono, monospace); font-size: 12px; color: var(--fg); word-break: break-all; }
+.ref-act { font-size: 11px; color: var(--fg); opacity: .65; border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; }
+.ref-btn { font-size: 11px; padding: 2px 8px; }
+.ref-src { display: block; flex-basis: 100%; max-height: 320px; overflow: auto; background: rgba(255,255,255,.04); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-family: var(--mono, monospace); font-size: 12px; white-space: pre; margin: 0; }
+.ref-thumb { width: 96px; height: 64px; object-fit: cover; border-radius: 6px; cursor: zoom-in; border: 1px solid var(--border); }
+.ref-poker { position: relative; height: 138px; margin: 4px 0; }
+.ref-pcard { position: absolute; left: 8px; top: 8px; width: 112px; height: 112px; border-radius: 10px; overflow: hidden; border: 2px solid var(--border); background: rgba(255,255,255,.04); cursor: zoom-in; box-shadow: 0 4px 14px rgba(0,0,0,.35); transition: transform .18s ease, box-shadow .18s ease; display: flex; flex-direction: column; }
+.ref-pcard:nth-child(2) { left: 72px; }
+.ref-pcard:nth-child(3) { left: 136px; }
+.ref-pcard:nth-child(4) { left: 200px; }
+.ref-pcard:nth-child(5) { left: 264px; }
+.ref-pcard:nth-child(n+6) { left: 328px; }
+.ref-pcard img { width: 100%; height: 88px; object-fit: cover; pointer-events: none; }
+.ref-pname { font-size: 10px; color: var(--fg); opacity: .7; text-align: center; padding: 2px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-modal { position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 9999; display: flex; flex-direction: column; padding: 24px; gap: 10px; }
+.ref-modal-bar { display: flex; align-items: center; justify-content: space-between; }
+.ref-modal-title { color: #fff; font-size: 13px; }
+.ref-frame { flex: 1; background: #fff; border: none; border-radius: 8px; }
+.ref-lightbox { align-items: center; justify-content: center; }
+.ref-big { max-width: 92vw; max-height: 88vh; border-radius: 8px; box-shadow: 0 8px 40px rgba(0,0,0,.6); }

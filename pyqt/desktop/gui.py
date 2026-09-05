@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from queue import Queue, Empty
 
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QEvent
 from PyQt6.QtGui import QColor, QFont, QTextCursor, QKeySequence, QTextCharFormat, QIcon, QPixmap, QPainter, QAction
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -496,6 +496,7 @@ class EditorWidget(QTabWidget):
         else:
             menu.addAction("AI 生成代码…", lambda: self._request_ai_action(tab, "改写成…"))
         menu.addSeparator()
+        menu.addAction("版本历史…", self.versions_requested.emit)
         menu.addAction("剪切", lambda: tab.editor.cut())
         menu.addAction("复制", lambda: tab.editor.copy())
         menu.addAction("粘贴", lambda: tab.editor.paste())
@@ -508,6 +509,7 @@ class EditorWidget(QTabWidget):
             self.ai_action_requested.emit(tab, action_name)
 
     ai_action_requested = pyqtSignal(object, str)
+    versions_requested = pyqtSignal()   # v8.26：编辑器右键「版本历史…」→ 主窗 VersionRestoreDialog
 
     # ---------------- 基础 ----------------
     def open_path(self, rel: str, content: str):
@@ -651,6 +653,7 @@ class ChatPanel(QWidget):
     expert_detail_requested = pyqtSignal(str)  # v5: 单击专家卡片 → 详情对话框
 
     attach_requested = pyqtSignal()  # v8：输入卡 + 按钮 → 主窗口弹文件选择加引用
+    open_file_requested = pyqtSignal(str)  # v8.29：变更栏点击文件引用 → 编辑器打开
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -992,6 +995,9 @@ class ChatPanel(QWidget):
         if act == "xcard":  # v5: 专家卡片 → 详情对话框
             self.expert_detail_requested.emit(parts[2] if len(parts) > 2 else "")
             return
+        if act == "openfile":  # v8.29 变更栏：点击文件引用 → 编辑器打开（相对路径，无冒号）
+            self.open_file_requested.emit(":".join(parts[2:]) if len(parts) > 2 else "")
+            return
         try:
             mid = int(parts[2]) if len(parts) > 2 else -1
         except ValueError:
@@ -1175,6 +1181,36 @@ class ChatPanel(QWidget):
         )
         self.view.moveCursor(QTextCursor.MoveOperation.End)
         self.view.ensureCursorVisible()
+
+    def render_change_log(self, changes):
+        """v8.29 桌面变更栏：任务结束的文件引用卡片，点击文件名在编辑器打开。
+
+        与网页版引用卡片同语义（桌面本地可直接打开文件，无需预览/源码切换）；
+        相邻重复 (path, action) 去重；渲染失败不影响主流程。"""
+        try:
+            items, seen = [], set()
+            for c in changes or []:
+                p = str((c or {}).get("path") or "").replace("\\", "/")
+                a = str((c or {}).get("action") or "")
+                if not p or (p, a) in seen:
+                    continue
+                seen.add((p, a))
+                items.append((p, a))
+            if not items:
+                return
+            rows = "".join(
+                '<div style="margin:2px 0;">'
+                f'<a href="act:openfile:{_esc(p)}" style="color:#7fb3ff;text-decoration:underline;">{_esc(p.rsplit("/", 1)[-1])}</a>'
+                f'<span style="color:gray;font-size:11px;">　{_esc(a)}</span></div>'
+                for p, a in items)
+            self.view.append(
+                '<div style="margin-top:6px;padding:6px 10px;border:1px solid rgba(128,128,128,.4);'
+                'border-radius:6px;font-size:12px;">'
+                f'<b>变更栏 · {len(items)} 个文件</b>（点击文件名在编辑器打开）{rows}</div>')
+            self.view.moveCursor(QTextCursor.MoveOperation.End)
+            self.view.ensureCursorVisible()
+        except Exception:
+            pass
 
     def sub_event(self, label, ev):
         t = ev.get("type")
@@ -1613,7 +1649,8 @@ class DriftThread(QThread):
         try:
             if self.mode == "push":
                 self.res = asyncio.run(asyncio.wait_for(
-                    sync_mod.push_to_server(self.cfg, self.payload, include_cold=True), 10.0))
+                    sync_mod.push_to_server(self.cfg, self.payload,
+                                            include_cold=True, upload="auto"), 90.0))
             elif self.mode == "pull":
                 self.res = asyncio.run(asyncio.wait_for(
                     sync_mod.pull_from_server(self.cfg), 15.0))
@@ -1883,6 +1920,7 @@ class DeverAIApp(QMainWindow):
         self.editors = EditorWidget()
         self.editors.cfg = self.cfg
         self.editors.ai_action_requested.connect(self._open_ai_action)
+        self.editors.versions_requested.connect(self._open_version_restore)
         self.editors.ai_status.connect(self._set_ai_status)
         self.editors.quote_requested.connect(
             lambda text: self.chat.add_quote("编辑器选区", text))
@@ -1921,6 +1959,11 @@ class DeverAIApp(QMainWindow):
         mp.model_picked.connect(self._on_model_picked)
         mp.manage_requested.connect(self._open_settings)
         self.chat.attach_requested.connect(self._attach_file)
+        self.chat.open_file_requested.connect(self._open_file)  # v8.29 变更栏引用打开
+        # v8.30 方案1：窗口级文件拖放入库 + 输入框粘贴文件/剪贴板图片（Future.md 用户裁决）
+        self.setAcceptDrops(True)
+        self.chat.inp.setAcceptDrops(False)      # 拖放统一上浮到窗口级入库
+        self.chat.inp.installEventFilter(self)
         self._refresh_model_label()
         # v8.16：多会话标签条接线（存储不可用=开关关闭时保持隐藏）
         if self.sessions is not None:
@@ -2505,6 +2548,80 @@ class DeverAIApp(QMainWindow):
         m = get_model(self.cfg.model) if self.cfg.model else None
         name = m.display_name() if m else (self.cfg.model or "模型未配置")
         self.chat.set_model_label(name)
+
+    # ---------------- v8.30 上传入库（方案1：拖拽/粘贴，Future.md 用户裁决） ----------------
+    def dragEnterEvent(self, ev):
+        md = ev.mimeData()
+        if md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
+            ev.acceptProposedAction()
+        else:
+            super().dragEnterEvent(ev)
+
+    def dropEvent(self, ev):
+        md = ev.mimeData()
+        if md.hasUrls():
+            local = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+            if local:
+                ev.acceptProposedAction()
+                self._ingest_paths(local)
+                return
+        super().dropEvent(ev)
+
+    def eventFilter(self, obj, ev):
+        # 输入框：Ctrl+V 粘贴文件/剪贴板图片 → 入库并挂引用条；纯文本粘贴走默认
+        if obj is getattr(self.chat, "inp", None):
+            if ev.type() == QEvent.Type.KeyPress and ev.matches(QKeySequence.StandardKey.Paste):
+                md = QApplication.clipboard().mimeData()
+                if md.hasUrls():
+                    local = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+                    if local:
+                        self._ingest_paths(local)
+                        return True
+                if md.hasImage() and self._ingest_clipboard_image():
+                    return True
+        return super().eventFilter(obj, ev)
+
+    def _ingest_paths(self, paths):
+        """本机文件批量入库 uploads/ 并挂引用条（指针式引用，AI 用 read_file 读取相对路径）。"""
+        from .uploads_ingest import ingest_file
+        if not paths:
+            return
+        ws = self.cfg.workspace
+        if not ws:
+            QMessageBox.information(self, "提示", "请先授权工作区，再入库文件。")
+            return
+        ok_n = 0
+        for p in paths:
+            ok, info = ingest_file(ws, p)
+            if ok:
+                ok_n += 1
+                self.chat.add_quote(
+                    info,
+                    f"[文件已入库工作区：{info}]（AI 可用 read_file 读取该相对路径；"
+                    "二进制用户资产请走 copy_user_asset 工作副本语义，原文件语义不变）")
+            else:
+                self.statusBar().showMessage(f"入库失败 {Path(p).name}: {info}", 6000)
+        if ok_n:
+            self.statusBar().showMessage(
+                f"已入库 {ok_n} 个文件到 uploads/（引用条随下一条消息发送给 AI）", 6000)
+
+    def _ingest_clipboard_image(self):
+        """剪贴板图片 → uploads/pasted-<ts>.png。成功返回 True。"""
+        from .uploads_ingest import alloc_dest
+        img = QApplication.clipboard().image()
+        if img is None or img.isNull():
+            return False
+        dest, info = alloc_dest(self.cfg.workspace,
+                                f"pasted-{time.strftime('%Y%m%d-%H%M%S')}.png")
+        if dest is None:
+            self.statusBar().showMessage(f"图片入库失败: {info}", 6000)
+            return False
+        if not img.save(str(dest), "PNG"):
+            self.statusBar().showMessage("图片落盘失败", 6000)
+            return False
+        self.chat.add_quote(info, f"[图片已入库工作区：{info}]（AI 可用图像工具读取该相对路径）")
+        self.statusBar().showMessage(f"剪贴板图片已入库 {info}", 6000)
+        return True
 
     def _attach_file(self):
         start = self.cfg.workspace or os.getcwd()
@@ -3159,6 +3276,8 @@ class DeverAIApp(QMainWindow):
                     self.terminal.append("> " + ev["args"]["command"])
             elif t == "tool_result":
                 self.chat.finish_tool(ev.get("call_id"), ev.get("ok"), ev.get("output"), ev.get("meta"))
+            elif t == "file_changes":  # v8.29 变更栏
+                self.chat.render_change_log(ev.get("changes") or [])
             elif t == "cmd_output":
                 self.chat.tool_output(ev.get("call_id"), ev.get("line", ""))
                 self.terminal.append(ev.get("line", ""))
@@ -3556,6 +3675,7 @@ class DeverAIApp(QMainWindow):
         if not can:
             return False
         if getattr(self.cfg, "auto_drift_on_exit", True):
+            self._ensure_drift_upload_mode()
             self.statusBar().showMessage("自动算力漂移：退出前推送工作状态到服务器…", 3000)
             return True
         box = QMessageBox(self)
@@ -3568,7 +3688,41 @@ class DeverAIApp(QMainWindow):
         normal_btn = box.addButton("普通退出", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(normal_btn)
         box.exec()
-        return box.clickedButton() is drift_btn
+        drift = box.clickedButton() is drift_btn
+        if drift:
+            self._ensure_drift_upload_mode()
+        return drift
+
+    def _ensure_drift_upload_mode(self):
+        """v8.27：漂移上传模式只问一次（最简=WorkTree 即时变更增量 / 完整=所有工作区文件）。
+
+        勾选「记住选择」即写入 config 永久生效，此后不再询问；不勾选仅本轮生效（下次再问）。
+        """
+        if getattr(self.cfg, "drift_upload_mode", "") in ("minimal", "full"):
+            return
+        try:
+            from PyQt6.QtWidgets import QCheckBox
+            box = QMessageBox(self)
+            box.setWindowTitle("漂移上传模式")
+            box.setText("选择算力漂移的上传模式（仅询问这一次）：")
+            btn_min = box.addButton("最简（WorkTree 即时变更增量）",
+                                    QMessageBox.ButtonRole.AcceptRole)
+            btn_full = box.addButton("完整（所有工作区文件）",
+                                     QMessageBox.ButtonRole.AcceptRole)
+            box.setDefaultButton(btn_min)
+            chk = QCheckBox("记住选择，以后不再询问（可改配置文件 drift_upload_mode）", box)
+            chk.setChecked(True)
+            box.setCheckBox(chk)
+            box.exec()
+            mode = "full" if box.clickedButton() is btn_full else "minimal"
+            self.cfg.drift_upload_mode = mode
+            if chk.isChecked():
+                from dataclasses import asdict
+                from .config import CONFIG_PATH
+                from .storage import save_json
+                save_json(CONFIG_PATH, asdict(self.cfg))
+        except Exception:
+            pass
 
     def _drift_check_startup(self):
         """开机检查：若上次是「算力漂移退出」，查询服务器是否仍有未回传产出。
@@ -3699,7 +3853,9 @@ class DeverAIApp(QMainWindow):
                     t_begin.wait(2500)
             t = self._drift_push("quit")
             if t is not None:
-                t.wait(2500)
+                # v8.27 阶段3：漂移退出可能上传全工作区（客户端预算 144MB/服务器 192MB），
+                # 等待上限对齐上传窗口 90s——2.5s 会杀掉上传线程使退出上传形同虚设
+                t.wait(90_000)
         except Exception:
             pass
         w = self.editors._worker

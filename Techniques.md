@@ -4,6 +4,9 @@
 
 ## 目录（章节导航）
 
+- [v8.27 真·算力漂移：服务器端续算（2026-09-05）](#v827-真算力漂移服务器端续算2026-09-05)
+- [v8.26 编辑器统一 WorkTree 保护 + 工作副本 + 命名规则（2026-09-05）](#v826-编辑器统一-worktree-保护--工作副本--命名规则2026-09-05)
+- [v8.25 用户文件保护（补记，2026-09-05 下午轮）](#v825-用户文件保护补记2026-09-05-下午轮)
 - [v8.15 检修收尾 + v8.16 多会话标签（2026-08-27）](#v815-检修收尾--v816-多会话标签2026-08-27)
 - [v8.18 终端环境池 + 悬浮小助手 Agent 循环 + 系统专家（2026-08-30）](#v818-终端环境池--悬浮小助手-agent-循环--系统专家2026-08-30)
 - [v8.17 安全中心轻档聚合（2026-08-30）](#v817-安全中心轻档聚合2026-08-30)
@@ -41,6 +44,63 @@
 - [v6.2 / v6.3 / v8 新增关键实现技巧](#v62-新增关键实现技巧双入口--svg--相对路径安全)
 
 ---
+
+## v8.27 真·算力漂移：服务器端续算（2026-09-05）
+
+### 需求背景（用户四项裁决）
+①密钥同样传上服务器但必须加密（MQTT 不采用）；②不看守模式：不使用提问/审批工具，能做的做完、没做完的保留进度；③工作区在合适位置（轮边界）断掉会话上传，服务器继续同一会话；④服务器同步端把工作区素材化到 APPDATA，WorkTree 等数据同步到对应位；退出时选上传模式（最简/完整）并记住不再问。
+
+### A. 密钥信封（sync.py）
+- `export_keys_envelope(cfg, password)`：六字段（api_key/api_base_url/model/search/dashscope/drift_api_key）→ 内嵌随机盐的 PBKDF2 派生 + Fernet(zlib) 信封 `{"v":1,"kind":"deverai-keys","salt","tok"}`。**盐内嵌**（不依赖本机 sync_salt.bin，服务器端可独立解密）。无 cryptography 时 **fail-closed 返回空**（拒绝降级混淆——假加密比不加密更危险），服务器端走既有 drift_api_key 兜底。
+- `import_keys_envelope(text, password)`：续算端解密到**内存**（不落盘）；错口令抛 ValueError。
+- push_to_server 增加 `upload` 参数（"auto"/"minimal"/"full"/""）与 `pid`/`keys_enc`/`ws_zip`/`data_zip` 字段；sync_queue 普通冲刷不传 upload（避免周期全量推送）。
+
+### B. 不看守模式（tools.py / agent.py / cli_main.py / config）
+- `_request_approval` 顶部插入最高优先分支：`ENABLE_UNATTENDED` 时非危险自动放行、危险动作 `_unattended_note` 记入工作区 `unattended_progress.json` 台账（随快照往返）并返回 False。
+- `UNATTENDED_RULES` 提示词注入：禁提问、自行判断、能做做完、汇报分「已完成/未完成（原因）」。
+- CLI `--unattended`；设置页 SWITCHES 三层贯通。
+
+### C. 上传模式（gui.py / sync.py）
+- `drift_upload_mode`：空=漂移退出首次询问（最简/完整 + 记住勾选默认开），写入 config 后不再问；本轮不勾选仅内存生效。
+- `build_drift_upload(cfg, mode)`：minimal=工作区 mtime 增量（基准 `data/drift_last_push.json`，`mark_drift_pushed()` 推送成功后记录）+ data 子集（checkpoints/audit/记忆/工作区设置/保护状态/终端池——**绝不入工作区**）；full=全工作区。排除集与一键备份一致，单包 64MB 上限。
+
+### D. 服务器素材化（sync_server.py）
+- `DRIFT_WS_DIR`（`%LOCALAPPDATA%\DeverAI\drift`，`SYNC_WS_DIR` 覆盖）`/<项目号>/`：`workspace/`（素材化工作区，普通端 CLI `--workspace` 直指）+ `data/`（WorkTree/记忆/设置位）+ `keys.enc`（仅密文）+ `snapshot`（续算读历史）+ `latest.txt`。
+- `_safe_extract_zip`：zip-slip 防护（拒绝绝对路径/`..`/逃出目标目录）。
+- `/drift/status` 返回 `drift_ws`（dir/latest/resume_hint 续算指引）。
+
+### E. 续算接力（cli_main.py）
+- `--from-drift <dir>`：读 `snapshot`（先凭 getpass 口令解密、失败回落明文/冷备）载入历史 → 读 `keys.enc` 解密**到内存**（cfg 直改，不落盘）→ 无信封时用服务器本地 drift_api_key。快照内非敏感配置（temperature/max_tokens/agent_mode）接力。
+
+### 验证
+桌面套件新增 `test_unattended_and_keys`（自动放行/危险跳过/台账/关闭回落/信封回环+错口令/fail-closed/完整与最简打包/增量基准）；smoke 新增 C10（素材化三件套落位 + /drift/status 指引）与 C11（zip-slip 拒绝）；`py_compile` 全量 0 失败。
+
+## v8.26 编辑器统一 WorkTree 保护 + 工作副本 + 命名规则（2026-09-05）
+
+### 需求背景
+用户裁决：①AI 禁碰语义=拷贝（原内容不修改，拷到别处干）；②PPT 参考库&知识库（Mavis 侧先落地，DeverAI 模块入 Future.md）；③编辑器加在 DeverAI 桌面+网页两端统一（Lite/DSH 插件不动），受 WorkTree 机制约束保护；④新建文件命名规则（优先找资料惯例，否则 时间-作者-内容）；⑤「未选择工作区」会话不得把产物摔桌面（Mavis 侧行为规则，记 user memory）。
+
+### A. 工作副本（file_protect.py / tools.py / bridge.py / tools.js）
+- `make_workcopy(ws, rel)`：仅工作区相对路径，拒绝 `..`/绝对路径；按「时间-作者-内容」生成 `workcopy/YYYYMMDD-<actor>-<stem><ext>`（冲突加 -2/-3），shutil.copy2；workcopy/ 首段目录在 is_user_asset / command_touches_user_asset 中豁免（副本是 AI 产物）。
+- 桌面工具 `copy_user_asset`：ENABLE_WORK_COPY 门控 + _request_approval(dangerous) 审批门 + asyncio.to_thread + file_changed 事件；TOOL_FUNCS / build_tool_defs / TOOL_MATCH 三处注册。
+- 网页版 `POST /api/bridge/fs/workcopy`：复用文件桥保护（READ_PROTECTED 拒绝）+ file_protect 导入失败 501 兜底 + `ServerConfig.enable_work_copy` 后端强制校验；tools.js `copy_user_asset` def + requestApproval(dangerous:true) + 调用端点。
+- 阶段3 加固：`_is_workcopy` 拒绝 `..` 穿越与盘符（防 `workcopy/../` 绕过豁免）；`make_workcopy` 以 `_WORKCOPY_DENY_TOP/_WORKCOPY_DENY_NAME` 拒绝敏感目录与敏感名（防 config.json/api.txt 等经副本外带）。
+- 阻断文案升级：check_ai_write_block / command_touches_user_asset / tools.js write 阻断提示统一追加「可经用户批准调用 copy_user_asset 生成工作副本」引导。
+
+### B. 编辑器统一（editor.js / gui.py / storage.py）
+- webui saveActiveTab：保存前 `POST /checkpoint/save {content:'', source:'human'}`（后端直读原文件，与桌面 save_current 对齐；不设 dirty 条件——外部改盘兜底，失败 toast 不阻塞）；标签栏加「历史」按钮复用 chat.js openVersionDialog。
+- 桌面编辑器右键菜单加「版本历史…」，经信号接主窗 _open_version_restore（既有 VersionRestoreDialog）。
+- webui storage.save_text 增加 eol 参数；bridge fs_write 写前嗅探原文件前 64KB 是否含 CRLF 决定行尾（对齐桌面 sniff_crlf 纪律），新文件 LF。
+
+### C. 提示词与规则注入（agent.py）
+- AGENT_SAFETY_RULES / _WEB 追加：用户资产原件永不改 + copy_user_asset 引导；新建文件命名规则（优先惯例，否则 时间-作者-内容）。
+
+### 验证
+py_compile 全量 0 失败；node --check 全过；lite 孪生 SHA256 不变（本轮未触碰）；_audit_tmp gui+server 全绿；/fs/workcopy 与桌面 copy_user_asset 冒烟断言各一；Err.log 保持 0 字节。
+
+## v8.25 用户文件保护（补记，2026-09-05 下午轮）
+
+> 本节为补记：该轮（13:19-13:34）落地 file_protect.py 四端接线但未写 dev_log，本轮（v8.26）按工作流补记。改动清单以源码为准：pyqt/desktop/file_protect.py（新建）、checkpoint.py（save_checkpoint_bytes 二进制快照）、config.py/settings_dialog.py（三开关）、tools.py（write/edit/delete 阻断 + backup_workspace/scan_ambiguous_files/quarantine_files 工具）、agent.py；webui/app/bridge.py（fs/write、/fs/* 阻断）、snap_bridge.py（/protect/* 端点）、lite_server.py（同源阻断）；webui/static/js/tools.js（USER_ASSET_SUFFIXES 同源）、chat.js、lite.html 孪生副本。
 
 ## v8.15 检修收尾 + v8.16 多会话标签（2026-08-27）
 

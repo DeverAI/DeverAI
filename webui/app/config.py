@@ -27,6 +27,7 @@ class ServerConfig:
     allow_ai_delete: bool = False    # 命令桥是否允许删除文件
     llm_allow_loopback: bool = True  # LLM 代理是否允许环回地址（本地 LLM 如 ollama；生产多租户设 False）
     power_authorized: bool = False   # 电源操作（关机/休眠）是否已授权
+    enable_work_copy: bool = True    # v8.26：工作副本端点后端开关（/fs/workcopy）
 
     def save(self) -> None:
         save_json(CONFIG_PATH, asdict(self))
