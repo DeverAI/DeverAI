@@ -1388,6 +1388,11 @@ class SettingsDialog(QDialog):
         self.cb_traffic.setEnabled(_modes_on)
         self.cb_token.setEnabled(_modes_on)
         self.cb_sleep.setEnabled(_modes_on)
+        # v8.34（H5）：灰掉的控件要给理由——否则用户只看到"点不动"，不知道为什么
+        _tip = ("" if _modes_on else
+                "「三大模式」总开关已关闭（模块开关页 ENABLE_MODES）；先打开总开关，此处勾选才生效")
+        for _cb in (self.cb_traffic, self.cb_token, self.cb_sleep):
+            _cb.setToolTip(_tip)
         self.ed_sleep_goal.setText(c.sleep_goal)
         self.ed_sleep_action.setText(c.sleep_action)
         self.cb_sleep_auth.setChecked(c.sleep_authorized)

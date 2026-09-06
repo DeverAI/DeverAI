@@ -401,6 +401,19 @@ def smoke_version(res: _Res, tag: str, entry_dir: Path, port: int,
                 res.check(f"{tag}: /api/bridge/models 清理 200",
                           pdm.status_code == 200, f"status={pdm.status_code}")
 
+                # v8.34：v8.33 新增的协调看板端点此前冒烟零覆盖——按「新端点必须真实
+                # 调用一次」纪律补契约断言（也顺带验证 desktop.config 的 DATA_DIR 隔离生效）
+                cbd = client.get("/api/bridge/coordination")
+                cbd_body = {}
+                try:
+                    cbd_body = cbd.json() or {}
+                except Exception:
+                    pass
+                res.check(f"{tag}: /api/bridge/coordination 200 契约",
+                          cbd.status_code == 200 and isinstance(cbd_body.get("agents"), list)
+                          and isinstance(cbd_body.get("conflicts"), list),
+                          f"status={cbd.status_code} body={str(cbd_body)[:120]}")
+
             # v8.22 外部 API 代理：SSRF 校验拒绝路径（不做真实外网请求）
             ep0 = client.post("/api/llm/ext_proxy", json={})
             res.check("ext_proxy 缺 base_url 拒绝", ep0.status_code == 400, f"status={ep0.status_code}")

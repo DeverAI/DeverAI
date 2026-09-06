@@ -38,6 +38,9 @@ _TOUCH_THROTTLE_S = 8.0
 
 _LOCK = threading.Lock()
 _KEEP_OVERRIDE: int | None = None   # 测试钩子：覆盖 TTL（秒）
+# v8.34（H2）：aid → 上次落盘时刻。节流写盘的记账本——缺了它，纯心跳（无 task/资源）
+# 既不落盘也不写新条目，轮开始登记的 Agent 从未进过注册表。
+_LAST_PERSIST: dict = {}
 
 _SSH_RE = re.compile(r"(?i)\b(?:ssh|sshpass|plink)\s+(?:-\S+\s+)*(?:([^\s@/]+)@)?([\w.\-]+)")
 _CP_RE = re.compile(r"(?i)\b(?:scp|rsync|pscp)\s+(?:-\S+\s+)*(?:([^\s@/]+)@)?([\w.\-]+):")
@@ -103,12 +106,20 @@ def _save(data: dict) -> None:
     save_json(STATE_PATH, data)
 
 
-def _purge(data: dict) -> None:
-    """回收离线 Agent（TTL 过期）与其收件箱。"""
+def _purge(data: dict) -> int:
+    """回收离线 Agent（TTL 过期）与其收件箱。返回回收条数（调用方据此决定是否落盘）。"""
+    removed = 0
     for aid in list((data.get("agents") or {}).keys()):
         e = data["agents"].get(aid) or {}
         if not _alive(e):
             data["agents"].pop(aid, None)
+            removed += 1
+            # v8.34（H4）：死 Agent 的收件箱一并清理——此前只删 agents 条目，inbox 键永久
+            # 残留（每个死 pid 最多 50 条消息），coordination.json 随进程重启单调增长。
+            # 语义无损：该 Agent 复活后重新声明资源会再次触发双向投递。
+            (data.get("inbox") or {}).pop(aid, None)
+            _LAST_PERSIST.pop(aid, None)
+    return removed
 
 
 def _conflicts_for(data: dict, agent_id: str) -> list:
@@ -162,11 +173,13 @@ def touch(agent_id: str, workspace: str, status: str = "running", task: str = No
             keys.append({"key": k, "display": str(r).strip()[:160]})
     with _LOCK:
         data = _load()
-        _purge(data)
+        purged = _purge(data)   # v8.34（H4）：回收条数参与落盘判定
         agents = data["agents"]
         e = agents.get(aid)
         now = _now()
+        created = False
         if e is None:
+            created = True   # v8.34（H2）：新条目必须落盘，否则看板永远看不到这个 Agent
             e = {"agent_id": aid, "workspace": str(workspace or ""),
                  "workspace_name": Path(str(workspace or "")).name or "ws",
                  "pid": os.getpid(), "started": now, "status": status,
@@ -197,7 +210,12 @@ def touch(agent_id: str, workspace: str, status: str = "running", task: str = No
                         new_conflicts.append((other_aid, oe, k))
         e["resources"] = list(merged.values())
         changed = bool(keys) or task is not None or next_action is not None
-        if new_conflicts or not throttle or changed:
+        # v8.34（H2）修复：纯心跳也要按节流窗口落盘。此前条件为
+        # `new_conflicts or not throttle or changed`——轮开始的 touch（只带 status/model）
+        # 三者全 False → 连新建条目都不写盘，看板只显示"声明过资源"的 Agent，
+        # 违背「检查每一个并发 Agent 在做什么」。写盘频率仍受 _TOUCH_THROTTLE_S 约束。
+        due = (now - float(_LAST_PERSIST.get(aid) or 0.0)) >= _TOUCH_THROTTLE_S
+        if new_conflicts or not throttle or changed or created or due or purged:
             for other_aid, oe, k in new_conflicts:
                 inbox = data["inbox"].setdefault(other_aid, [])
                 inbox.append({"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -210,8 +228,7 @@ def touch(agent_id: str, workspace: str, status: str = "running", task: str = No
                              "text": _protocol_text(e, oe, k)})
                 data["inbox"][aid] = mine[-50:]
             _save(data)
-        elif not throttle:
-            _save(data)
+            _LAST_PERSIST[aid] = now
     return _self_view(data, aid)
 
 
@@ -225,7 +242,12 @@ def snapshot(self_agent_id: str = None) -> dict:
     """人类看板/AI 看板：存活 Agent 列表 + 冲突对（不清收件箱）。"""
     with _LOCK:
         data = _load()
-        _purge(data)
+        # v8.34（H4）修复：回收必须落盘。此前 _purge 只改内存、snapshot 从不回写——
+        # 死 Agent 与其收件箱在 coordination.json 里永久堆积（每次进程重启新增一个
+        # 「目录名@新pid」条目，文件只增不减）；v8.33 的 TTL 断言只看 snapshot 返回值，
+        # 所以测不出来。
+        if _purge(data):
+            _save(data)
         agents = []
         for aid, e in (data.get("agents") or {}).items():
             if not _alive(e):

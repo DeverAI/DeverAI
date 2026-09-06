@@ -221,3 +221,11 @@
 [copy2 保留 mtime 破坏下游增量] v8.30 入库用 shutil.copy2（保留源 mtime），而 drift minimal 增量按 mtime > 上次推送基准筛文件 → 拖进来的旧文件永远进不了增量包，续算端工作区缺文件（冒烟测不出，只有顺着时间语义想才看得见）→ 「复制/落盘类动作」必须顺着下游的时间/顺序语义核对一遍：入库类复制用 shutil.copy（新 mtime）或显式 os.utime；同族陷阱还有 Windows 大小写不敏感路径让前缀过滤被 Uploads/ 变体绕过。
 
 [AI 写入指纹登记缺失] file_protect.note_ai_write（AI 写入登记 actor=ai 指纹）定义后全仓库零调用——AI 生成的资产文件（.csv 等）无指纹记录，check_ai_write_block 内 sync_user_modified 把无记录文件补记 actor=human/user_modified，AI 下次编辑被「用户文件保护」永久拦截，且"AI 刚生成可继续改"分支永不生效 → AI 成功写入/编辑用户资产后缀文件后必须登记/刷新指纹（编辑后不刷新会把 AI 自己的编辑误判为用户修改并锁死）；接线点=桌面 tools.py write/edit + webui bridge + webui/lite_server + lite/lite_server（v8.32 五端修复），且仅 is_user_asset(rel) 时登记防状态文件膨胀；配套断言锁闭环（默认拦截→登记放行→用户修改识别→重新锁死→非资产不受影响）。
+
+[Qt 类未导入 + 无构造断言 = 功能一点就崩] v8.33 协调看板 refresh() 用 QTableWidgetItem，但模块级与 __init__ 局部 import 都没有它 → __init__ 末尾调 refresh() 即 NameError，「全局协调看板」自诞生起从未打开过；py_compile 与 coordination 单元测试（只测数据层）都抓不到 → 新增 Qt 对话框/控件必须有一条离屏「构造 + 刷新 + 读回单元格」断言（QApplication.instance() or QApplication([]) 复用单例，且排在已有 GUI 测试之后，二次构造 QApplication 会直接崩）；PyQt6 枚举一律 scoped 形式（Qt.WidgetAttribute.WA_DeleteOnClose——写 Qt.WA_DeleteOnClose 即 AttributeError，本轮新断言当场抓到）。
+
+[节流写盘把首次登记一起吞掉] 心跳/登记函数用「有新信息才落盘」的节流条件（new_conflicts or not throttle or changed），纯心跳（只带 status/model）三者全 False → 连新建条目都不写盘，看板永远看不到"没声明资源"的 Agent，违背"检查每一个并发 Agent 在做什么" → 节流条件必须补两个兜底项：首次创建（created）与距上次落盘超过节流窗口（due，用 _LAST_PERSIST 记账）；断言必须覆盖"只发纯心跳"这条路径（原测试全都带 task/resources，所以全绿）。
+
+[内存回收不落盘 → 状态文件只增不减] TTL 回收/垃圾清理只改内存 dict，读取函数（snapshot）只 return 不回写 → 死条目与其收件箱在 JSON 里永久堆积（每次进程重启多一个「目录名@新pid」键），而原断言只检查函数返回值，看不出磁盘泄漏 → 回收函数返回条数、调用方据此 _save；断言要读磁盘终态（_load() 后查键）而不是只看返回值。
+
+[监控看板用模态] 看板/监控类 UI 用 dlg.exec() 模态打开 → 挡住主窗口，用户看到冲突却点不到本窗口的「停止」，与"损害发生前叫停"的用途直接相悖；且以主窗口为 parent 的对话框关闭后不销毁，每开一次残留一个隐藏实例、其 5s 自动刷新定时器永不停（持续读盘 + 内存增长）→ 监控面板用 show() 非模态 + 单实例复用（raise_/activateWindow，捕获 RuntimeError 处理已销毁包装器）+ setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True) + finished 信号停表。

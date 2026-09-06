@@ -106,6 +106,18 @@
 - **解决方法**：测试内显式 os.utime 锚定 mtime（cut+60s）保证确定性；产品侧 drift 增量跨机比较必须用墙钟，语义不动（v8.32 修测试并注明）。
 - **类型**：工作区专属
 
+### [DeverAI] 协调看板打不开（Qt 类未导入）
+- **现象**：点「全局协调看板」毫无反应/报 AttributeError，v8.33 交付的人类看板从未真正打开过。
+- **可能的远因**：`ide_extras.py` 的 `CoordinationBoardDialog.refresh()` 用 `QTableWidgetItem`，但模块级与 `__init__` 局部 import 都没有它；`__init__` 末尾就调 `refresh()` → NameError。py_compile 抓不到，coordination 数据层单测也抓不到。
+- **解决方法**：补 import；PyQt6 枚举用 scoped 形式（`Qt.WidgetAttribute.WA_DeleteOnClose`）；新增 Qt 对话框必须加离屏「构造+刷新+读回单元格」断言，且排在已有 GUI 测试之后复用 QApplication 单例（v8.34 修复）。
+- **类型**：工作区专属
+
+### [DeverAI] coordination.json 只增不减 + 看板看不到普通 Agent
+- **现象**：协调看板只显示声明过外部资源的 Agent；`data/coordination.json` 随每次重启单调变大，死 Agent 与其收件箱永不清除。
+- **可能的远因**：`touch()` 的节流条件 `new_conflicts or not throttle or changed` 对纯心跳（只带 status/model）全 False → 新条目也不落盘；`_purge()` 只改内存 dict，`snapshot()` 只 return 从不回写。
+- **解决方法**：节流条件补 `created` 与 `due`（`_LAST_PERSIST` 记账）；`_purge` 返回条数、`snapshot/touch` 据此 `_save`，并连带清理死 Agent 的 inbox；断言要读磁盘终态而非只看返回值（v8.34 修复）。
+- **类型**：工作区专属
+
 ---
 
 ## 全局故障库

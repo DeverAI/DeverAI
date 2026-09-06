@@ -280,6 +280,10 @@ class Agent:
                 _aid = _coord.self_agent_id(getattr(self.cfg, "workspace", "") or "")
                 _view = _coord.touch(_aid, getattr(self.cfg, "workspace", "") or "",
                                      status="running",
+                                     # v8.34（H2b）：带上本轮任务——此前只登记 status/model，
+                                     # 看板「在干什么」列恒为（未声明），要等 AI 自愿 declare
+                                     # 才有内容，违背"检查每一个并发 Agent 在做什么"的初衷。
+                                     task=(getattr(self, "_todo_text", "") or "")[:300] or None,
                                      model=getattr(self.cfg, "model", ""))
                 _inbox = _coord.pop_inbox(_aid)
                 _conf = _view.get("conflicts") or []
@@ -451,6 +455,7 @@ class Agent:
         if self._changes:
             await self._emit({"type": "file_changes", "changes": list(self._changes[-50:])})
         await self._emit({"type": "run_done", "result": result.__dict__})
+        self._coord_idle()   # v8.34（H11）：轮结束置 idle，看板不再把空闲 Agent 显示成 running
         return result
 
     # ------------------------------------------------------------------ #
@@ -536,6 +541,7 @@ class Agent:
         result = AgentResult(text=final_text, summary=final_text, rounds=1)
         await self._emit({"type": "text_delta", "content": final_text})  # 总结入聊天气泡
         await self._emit({"type": "run_done", "result": result.__dict__})
+        self._coord_idle()   # v8.34（H11）
         return result
 
     # ------------------------------------------------------------------ #
@@ -792,6 +798,21 @@ class Agent:
         """v6：专家产物主动复用入库入口（experts 编排在每个专家完工后调用）。失败不阻塞。"""
         await self._maybe_vault_eval()
         self._artifacts = []
+
+    def _coord_idle(self) -> None:
+        """v8.34（H11）：轮结束把协调注册表状态置 idle（仅顶层 Agent，防子 Agent 抖动）。
+
+        v8.33 自述的已知边界「轮与轮之间 status 保留 running 至 TTL 过期」在此收口：
+        人类看板要能区分"正在跑"与"跑完了"，否则"损害发生前叫停"没有判断依据。
+        失败不阻塞主流程。"""
+        if self.is_sub or not getattr(self.cfg, "ENABLE_COORDINATION", True):
+            return
+        try:
+            from . import coordination as _coord
+            ws = getattr(self.cfg, "workspace", "") or ""
+            _coord.touch(_coord.self_agent_id(ws), ws, status="idle", throttle=False)
+        except Exception:
+            pass
 
     def cancel(self) -> None:
         # v8.14：asyncio.Event 非线程安全，必须经 call_soon_threadsafe 投递到 loop 线程

@@ -806,12 +806,15 @@ class CoordinationBoardDialog(QDialog):
             QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QPushButton,
             QTableWidget, QVBoxLayout,
         )
+        # v8.34（H3）：关闭即销毁——此前对话框以主窗口为 parent 常驻，每开一次就残留一个
+        # 隐藏实例，且 5s 自动刷新定时器永不停（持续读盘 + 内存增长）。
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)  # PyQt6 scoped enum
         self.setWindowTitle("全局协调看板（跨工作区 Agent 闸口）")
         self.resize(900, 440)
         self._ws = workspace or ""
         lay = QVBoxLayout(self)
-        hint = QLabel("本机所有并发 Agent 在干什么/要操作哪些外部资源/接下来干什么；冲突行高亮——"
-                      "人类可在损害发生前直接叫停对应 Agent。")
+        hint = QLabel("本机所有并发 Agent 在干什么/要操作哪些外部资源/接下来干什么；冲突行高亮。"
+                      "要叫停某个 Agent：鼠标停在 Agent 列看它的工作区路径，切到那个窗口点「停止」。")
         hint.setWordWrap(True)
         lay.addWidget(hint)
         self.table = QTableWidget(0, 6, self)
@@ -835,14 +838,20 @@ class CoordinationBoardDialog(QDialog):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(5000)
+        # v8.34（H3）：关闭即停表（WA_DeleteOnClose 之外的双保险，防隐藏后仍每 5s 读盘）
+        self.finished.connect(lambda _r: self._timer.stop())
 
     def refresh(self):
         from PyQt6.QtGui import QColor
+        # v8.34（H1）修复：QTableWidgetItem 此前从未导入（模块级与 __init__ 局部都没有），
+        # refresh() 一执行即 NameError；而 __init__ 末尾就调 refresh()——等于 v8.33 的
+        # 「全局协调看板」一点开就崩，人类看板从未真正可用过（py_compile 抓不到，
+        # FreqErr「Qt 控件 API 要看准类属」「功能写好未接线」同族）。
+        from PyQt6.QtWidgets import QTableWidgetItem
         from . import coordination as coord
         try:
             snap = coord.snapshot(coord.self_agent_id(self._ws))
         except Exception as e:
-            self.table.setRowCount(0)
             self.table.setRowCount(1)
             self.table.setItem(0, 0, QTableWidgetItem(f"读取失败: {e}"))
             return
@@ -867,4 +876,9 @@ class CoordinationBoardDialog(QDialog):
                 it = QTableWidgetItem(v)
                 if str(a.get("agent_id", "")) in in_conflict:
                     it.setBackground(QColor(255, 96, 64, 70))
+                if j == 0:
+                    # v8.34（H7）：Agent 列挂完整工作区路径 tooltip——人类要"损害发生前叫停"
+                    # 就得知道是哪一个窗口；agent_id 只有「目录名@pid」，同名目录无从区分。
+                    it.setToolTip(str(a.get("workspace", "") or "")
+                                  + (f"\npid {a.get('pid', '')}" if a.get("pid") else ""))
                 self.table.setItem(i, j, it)

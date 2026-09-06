@@ -332,6 +332,17 @@ def test_gui():
     audits = list_audits(tail=5)
     check("audit.list_audits 返回列表", isinstance(audits, list))
 
+    # v8.34（H10）：协调看板走真实 gui 入口——非模态可见 + 二次打开复用同一实例
+    win._open_coordination_board()
+    app.processEvents()
+    cb = getattr(win, "_coord_board", None)
+    check("协调看板H10：gui 入口打开且非模态可见",
+          cb is not None and cb.isVisible() and not cb.isModal())
+    win._open_coordination_board()
+    check("协调看板H10：二次打开复用同一实例", getattr(win, "_coord_board", None) is cb)
+    cb.close()
+    app.processEvents()
+
     win.hide()
     # 收尾：停 AgentThread（后台 asyncio 常驻线程），失败也有界放弃
     try:
@@ -788,6 +799,102 @@ def test_coordination():
             coord.STATE_PATH = old_path
 
 
+# ------------------------------------------------------------------
+# 1.13) v8.34 修复回归：协调注册表落盘语义（纯心跳/收件箱回收/idle）
+# ------------------------------------------------------------------
+def test_coordination_registry():
+    from desktop import coordination as coord
+
+    with tempfile.TemporaryDirectory() as td:
+        old_path, old_persist = coord.STATE_PATH, dict(coord._LAST_PERSIST)
+        coord.STATE_PATH = Path(td) / "coordination.json"
+        coord._LAST_PERSIST.clear()
+        try:
+            aid = "plain@1"
+            # H2：轮开始的纯心跳（只带 status/model）——v8.33 此前完全不落盘
+            coord.touch(aid, td, status="running", model="gpt-x")
+            snap = coord.snapshot(aid)
+            ent = [a for a in (snap.get("agents") or []) if a.get("agent_id") == aid]
+            check("协调H2：纯心跳 Agent 也进注册表（看板可见）", bool(ent))
+            check("协调H2：status/model 落盘",
+                  bool(ent) and ent[0].get("status") == "running" and ent[0].get("model") == "gpt-x")
+            # H2b：带 task 的心跳把"在干什么"写进看板
+            coord.touch(aid, td, status="running", task="部署到 mindog")
+            tasks = [a.get("task") for a in (coord.snapshot(aid).get("agents") or [])
+                     if a.get("agent_id") == aid]
+            check("协调H2b：task 落盘（看板不再恒为未声明）", tasks == ["部署到 mindog"])
+            # H4：死 Agent 的收件箱随 TTL 一并回收（此前 inbox 键永久残留）
+            coord.send(aid, "other@2", "协议消息")
+            data = coord._load()
+            check("协调H4 前置：收件箱有消息", bool((data.get("inbox") or {}).get(aid)))
+            for e in (data.get("agents") or {}).values():
+                e["last_seen"] = (e.get("last_seen") or 0) - 99999
+            coord._save(data)
+            coord.snapshot(aid)   # 触发 _purge
+            data2 = coord._load()
+            check("协调H4：TTL 回收时死 Agent 收件箱一并清理",
+                  aid not in (data2.get("inbox") or {}) and not (data2.get("agents") or {}))
+            # H11：轮结束置 idle
+            coord.touch(aid, td, status="idle", throttle=False)
+            st = [a.get("status") for a in (coord.snapshot(aid).get("agents") or [])
+                  if a.get("agent_id") == aid]
+            check("协调H11：轮结束 idle 状态生效", st == ["idle"])
+        finally:
+            coord.STATE_PATH = old_path
+            coord._LAST_PERSIST.clear()
+            coord._LAST_PERSIST.update(old_persist)
+
+
+# ------------------------------------------------------------------
+# 1.14) v8.34 修复回归：协调看板对话框真的能打开（v8.33 因 QTableWidgetItem
+#       未导入，一点开就 NameError；py_compile 与 coordination 单元测试都抓不到）
+#       必须排在 test_gui 之后：复用其 QApplication，避免二次构造单例崩溃。
+# ------------------------------------------------------------------
+def test_coordination_board_dialog():
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication
+
+    from desktop import coordination as coord
+    from desktop.ide_extras import CoordinationBoardDialog
+
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as td:
+        old_path = coord.STATE_PATH
+        coord.STATE_PATH = Path(td) / "coordination.json"
+        try:
+            coord.touch("ws@1", td, status="running", task="看板冒烟")
+            dlg = CoordinationBoardDialog(None, td)
+            dlg.show()          # 必须先 show：隐藏态 close() 不触发 Close 事件/销毁
+            app.processEvents()
+            check("看板H1：对话框可构造并刷出数据行", dlg.table.rowCount() >= 1)
+            first = dlg.table.item(0, 0)
+            check("看板H1：Agent 列有内容", first is not None and bool(first.text()))
+            check("看板H7：Agent 列 tooltip 带完整工作区路径",
+                  first is not None and td in (first.toolTip() or ""))
+            check("看板H3：关闭即销毁属性已设",
+                  bool(dlg.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)))
+            timer = dlg._timer
+            check("看板H3：自动刷新定时器在跑", timer.isActive())
+            dlg.close()
+            app.processEvents()
+            # 关闭后 C++ 对象（含子定时器）应已销毁；访问已删包装器会抛 RuntimeError，
+            # 因此按 sip.isdeleted 判定，取不到 sip 时退回"定时器已停/已删"两条弱证据。
+            gone = False
+            try:
+                from PyQt6 import sip
+                gone = bool(sip.isdeleted(dlg))
+            except Exception:
+                gone = False
+            if not gone:
+                try:
+                    gone = not timer.isActive()
+                except RuntimeError:
+                    gone = True
+            check("看板H3：关闭后对话框销毁（定时器随之消失）", gone)
+        finally:
+            coord.STATE_PATH = old_path
+
+
 def main():
     failures = 0
     try:
@@ -874,6 +981,21 @@ def main():
         import traceback
         traceback.print_exc()
         FAILED.append(f"gui 异常: {e}")
+    try:
+        test_coordination_registry()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"coordination_registry 异常: {e}")
+    try:
+        # 必须排在 test_gui 之后（复用其 QApplication 单例）
+        test_coordination_board_dialog()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"coordination_board_dialog 异常: {e}")
 
     print("-" * 46)
     if FAILED or failures:

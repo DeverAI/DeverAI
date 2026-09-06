@@ -256,6 +256,7 @@ function switchSettingsPage(page) {
   if (page === 'models') loadModelRegistry();
   if (page === 'security') {
     loadSecurityAudit();
+    loadCoordinationBoard();   // v8.34（H8）
     renderExtApiEditor();
     renderOutboundDrafts();
     loadSmtpStatus();
@@ -493,6 +494,16 @@ function renderSecurityPage() {
       <div style="font-size:13px;color:var(--fg2);">HMAC Cookie + Bearer Token 双通道鉴权</div>
     </div>
 
+    <div class="section-title" style="margin-top:16px;">全局协调看板（跨工作区 Agent 闸口）</div>
+    <div style="font-size:13px;color:var(--fg2);margin-bottom:8px;">本机所有并发 Agent 在干什么、要操作哪些外部资源（如 SSH 主机）、有无冲突。发现冲突要在损害发生前处理：按工作区路径找到对应窗口，点它的「停止」。</div>
+    <div class="card" style="padding:10px;">
+      <textarea id="coord-board-box" readonly style="width:100%;height:150px;font-size:12px;font-family:monospace;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;resize:vertical;" placeholder="点击刷新读取协调看板"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+        <button class="btn" onclick="loadCoordinationBoard()">刷新</button>
+        <span id="coord-board-status" style="font-size:12px;color:var(--fg2);"></span>
+      </div>
+    </div>
+
     <div class="section-title" style="margin-top:16px;">外部 API 清单（授权给 AI）</div>
     <div style="font-size:13px;color:var(--fg2);margin-bottom:8px;">清单内的 API，AI 可通过 api_request 工具调用（首次调用需你在聊天卡片中授权）。密钥仅存浏览器本地。</div>
     <div id="extapi-list"></div>
@@ -550,6 +561,36 @@ function loadSecurityAudit() {
       `[${e.ts || ''}] ${e.action || ''} ${e.user || ''} ${e.ip || ''} ${e.detail || ''}`
     ).join('\n');
   }).catch(() => {});
+}
+
+/* v8.34（H8）：webui 人类协调看板。此前网页端只有 AI 工具能读 /api/bridge/coordination，
+   人类想看只能问 AI——违背 v8.33「这两个信息也有必要让用户能看到」的裁决。
+   渲染走只读 textarea 的 .value 与 textContent，天然规避 innerHTML 注入（FreqErr #152）。 */
+function loadCoordinationBoard() {
+  const box = $('#coord-board-box');
+  const st = $('#coord-board-status');
+  if (!box) return;
+  api('/api/bridge/coordination').then((r) => {
+    const agents = (r && r.agents) || [];
+    const conflicts = (r && r.conflicts) || [];
+    if (!agents.length) {
+      box.value = '当前没有存活的本机 Agent（心跳 TTL ' + ((r && r.ttl_s) || 180) + 's）。';
+    } else {
+      box.value = agents.map((a) =>
+        '[' + (a.status || '?') + '] ' + (a.agent_id || '')
+        + '\n    在干什么: ' + (a.task || '（未声明）')
+        + '\n    外部资源: ' + ((a.resources || []).join(', ') || '无')
+        + '\n    接下来: ' + (a.next_action || '（未声明）')
+        + '\n    工作区: ' + (a.workspace || '')).join('\n')
+        + (conflicts.length
+          ? '\n\n资源冲突:\n' + conflicts.map((c) => '- ' + c.key + ' → ' + (c.agents || []).join(' 与 ')).join('\n')
+          : '\n\n资源冲突: 无');
+    }
+    if (st) st.textContent = conflicts.length ? ('[!] ' + conflicts.length + ' 组资源冲突') : '[OK] 无冲突';
+  }).catch((e) => {
+    box.value = '读取协调看板失败（需先在设置中授权命令桥工作区）';
+    if (st) st.textContent = String((e && e.message) || e);
+  });
 }
 
 function exportSecurityAudit() {

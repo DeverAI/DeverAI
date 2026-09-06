@@ -2200,8 +2200,20 @@ class DeverAIApp(QMainWindow):
     def _open_coordination_board(self):
         """v8.33 全局协调看板：跨工作区 Agent 闸口（人类可在损害发生前直接叫停）。"""
         from .ide_extras import CoordinationBoardDialog
+        # v8.34（H10）：改为非模态 + 单实例复用。看板是"边看边动手"的监控面板：
+        # 模态 exec() 会挡住本窗口，用户看到冲突却点不到本窗口的「停止」，与
+        # "损害发生前叫停"的用途相悖；重复打开也不再叠一堆隐藏实例。
+        prev = getattr(self, "_coord_board", None)
+        if prev is not None:
+            try:
+                prev.raise_()
+                prev.activateWindow()
+                return
+            except RuntimeError:
+                self._coord_board = None   # WA_DeleteOnClose 已销毁 C++ 对象
         dlg = CoordinationBoardDialog(self, self.cfg.workspace if self.cfg else "")
-        dlg.exec()
+        self._coord_board = dlg
+        dlg.show()
 
     def _restore_checkpoint_cb(self, bak_path: str, rel_path: str):
         """实际恢复：读 bak 内容写回原文件（恢复前再做一次快照防后悔）。"""
@@ -2286,6 +2298,13 @@ class DeverAIApp(QMainWindow):
         act_ws = QAction("选择工作区目录…", self)
         act_ws.triggered.connect(self._pick_workspace)
         vm.addAction(act_ws)
+        # v8.34（H6）：协调看板加菜单入口——此前只藏在命令面板（Ctrl+Shift+P）里，
+        # 用户根本发现不了这个"损害发生前叫停"的闸口
+        vm.addSeparator()
+        act_coord = QAction("全局协调看板…", self)
+        act_coord.setToolTip("跨工作区 Agent 闸口：谁在干什么、要动哪些外部资源、有无冲突")
+        act_coord.triggered.connect(self._open_coordination_board)
+        vm.addAction(act_coord)
 
     def _apply_theme(self):
         """v7：按主题色板生成全局 QSS + 聊天区样式 + 图标着色。"""
