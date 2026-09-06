@@ -35,7 +35,7 @@ DANGEROUS_PATTERNS = [
     r"\brm\s+-[a-z]*[rf]", r"\bdel\s+/[sfqi]", r"\brmdir\s+/s", r"\brd\s+/s\b",
     r"\bformat\b", r"\bdiskpart\b",
     r"\bmkfs\b", r"\bdd\s+if=", r":\(\)\{", r"\breg\s+delete\b", r"\bshutdown\b", r"\breboot\b",
-    r"powershell\s+-enc", r"Invoke-Expression", r"\btaskkill\b(?=.*\s/f(?=\s|$))(?=.*\s/(?:im|pid)\b)",
+    r"\bpowershell\s+-enc", r"Invoke-Expression", r"\btaskkill\b(?=.*\s/f(?=\s|$))(?=.*\s/(?:im|pid)\b)",
     r">\s*/dev/", r"\bgit\s+push\s+.*--force(?!-with-lease)",
     r"\bdrop\s+(table|database)", r"\btruncate\s+table",
     # v8.13：执行代码/脚本的等价危险形式（黑名单之外的实际执行路径）

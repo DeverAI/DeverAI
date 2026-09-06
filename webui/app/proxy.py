@@ -239,7 +239,7 @@ async def llm_chat(request: Request, user: dict = Depends(current_user)):
     # 模型注册表解析：model 在注册表里且有独立 url/api_key 时，覆盖浏览器传的全局配置
     # （与桌面版主对话行为一致，避免"选择注册表模型后 url/api_key 不生效"）
     try:
-        from desktop import models as models_mod
+        from pyqt.desktop import models as models_mod  # v8.32（F3）：修复别名死导入（注册表 url/key 覆盖此前从未生效）
         m = models_mod.get_model(model)
         if m is not None:
             user_url = str(body.get("base_url") or "")

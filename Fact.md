@@ -163,3 +163,23 @@
   （指针式引用，AI read_file 读取）；checkpoint 跳过 uploads/ 前缀（C 盘约束，session_snap 整包/
   一键备份仍覆盖）。远程端追问裁决：手机/云端文件走漂移反向带回（方案3 既有通道），网页端受控
   上传=方案2 另行立项（攻击面单独审）。桌面变更栏与引用卡片已在 v8.29 补齐（⑥兑现）。
+- [2026-09-05 v8.32 全端检查轮] 用户指令「字面意义上的检查：看码→验证→修复→记录；同步各端（除 DSH 插件），
+  分歧谁新谁强用谁；Lite 保持轻量」。落地：①desktop.config 认 DEVERAI_DATA_DIR（v8.26 遗留前置解除），
+  meta_bridge×3/proxy×1 死导入激活（/api/bridge/models* 复活、proxy 注册表 url/key 覆盖生效）；②note_ai_write
+  五端接线（AI 生成资产不再被「用户文件保护」误锁，编辑后必须刷新指纹）；③Lite lite_server 补后端用户资产
+  拦截 + CRLF 保持（webui 副本同源移植，lite.html 孪生零改动）；④drift 上传包补 .pem/.key/.pfx/.p12 密钥
+  后缀排除（uploads_ingest 注释声称的同源就此成立）；⑤ENABLE_MODES 死开关接线（9 消费面+设置页三勾选联动；
+  行为门控落地，聊天区模式芯片保留可切换、总开关关时不生效）；⑥powershell -enc 危险正则四端统一为 \b 强
+  形式（新增四端静态一致性锁 test_dangerous_patterns_four_end_sync，首跑即抓到 lite.html 漂移）。备份=基线
+  提交 d988bee（红线禁命令行复制项目文件，git 基线替代手工副本，v8.24「检修前建基线快照」先例）。
+  遗留表态结果（用户同日答复）：①备份裁决=本地 git 基线提交制可行（远端网络环境不支持，不推远端）；
+  ②ENABLE_MODES 关=「演示模式」语义（后端没接口的那种样子），聊天区模式芯片不隐藏、保持现状。
+  仍未表态（不阻塞，见 dev_log v8.32 遗留）：webui 保护开关差异、冒烟提速开关、storage load_json 兜底、
+  uploads 并发同名竞态。
+- [2026-09-06 v8.33 全局协调协议裁决] 用户原话要点：「加一个全局的闸口，检查每一个正在并发执行任务的 agent
+  都在做什么；如果发现有冲突，就让这两个 agent 互通信息——你在干什么？我在干什么？你接下来要干什么？我接下来
+  要干什么？这两个信息也有必要让用户能看到，人类可以在损害发生前直接阻止，而不是等事后兜底」。场景=跨工作区
+  的外部资源并发（两个不同工作区的 Agent 同时 SSH 同一服务器，一个重启、另一个上传中掉线还懵着）。落地：
+  coordination.py 注册表（DATA_DIR 本机共享）+ 心跳 TTL + 冲突检测（归一化资源键）+ 双向收件箱协议 +
+  轮开始注入 + coordination_board/declare 工具 + 桌面协调看板对话框（命令面板入口）+ webui 只读端点 +
+  run_command 自动嗅探 ssh/scp/rsync 主机。开关 ENABLE_COORDINATION 默认开。

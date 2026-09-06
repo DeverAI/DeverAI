@@ -100,6 +100,16 @@ USER_FILE_PROTECT_RULES = """
 6. 新建文件命名规则（v8.26）：创建新文件优先沿用工作区已有命名惯例（先看同目录与资料文件）；无可依据的惯例时，按「时间-作者-内容」命名（如20260905-用户-实验报告.pptx；AI中间产物作者写AI）。
 """.strip()
 
+# v8.33 全局协调协议（跨工作区 Agent 闸口；用户裁决：冲突即互通，人类看板可提前阻止）
+COORDINATION_RULES = """
+【全局协调协议（v8.33，跨工作区 Agent 闸口）】
+1. 你不是本机唯一的 Agent：其他工作区的 Agent 可能同时在操作相同的外部资源（服务器/SSH/数据库等）。
+2. 即将操作外部资源（尤其 ssh/远程服务器）时，必须先调 coordination_declare 声明「在干什么/资源/接下来要干什么」；
+   返回冲突时与对方错峰或等待，不要抢跑。
+3. 重启/停服/批量删除等破坏性远程操作：即使无冲突也必须先经用户确认——对方 Agent 可能正在该资源上有未完成的写入。
+4. 可随时调 coordination_board 查看本机所有并发 Agent 的任务/资源/下一步。
+""".strip()
+
 # v8.27 不看守模式（ENABLE_UNATTENDED / CLI --unattended / 服务器续算）：无人值守纪律
 UNATTENDED_RULES = """
 【不看守模式纪律（v8.27，当前无人值守，必须遵守）】
@@ -220,12 +230,12 @@ class Agent:
             f"工作区: {ws_label}\n"
             "注意：工作区内文件路径均相对工作区根目录书写。"
         )
-        if self.cfg.traffic_mode:
+        if getattr(self.cfg, "ENABLE_MODES", True) and self.cfg.traffic_mode:  # v8.32（F7）
             parts.append(
                 "【流量模式已开启】输出保持最精简纯文本，避免冗余 Markdown 渲染包；"
                 "不发起大规模同步/上传任务。"
             )
-        if self.cfg.token_mode:
+        if getattr(self.cfg, "ENABLE_MODES", True) and self.cfg.token_mode:  # v8.32（F7）
             parts.append(
                 "【Token 计费模式已开启】目标是显著减少模型调用次数：尽量在单次回复内完成，"
                 "能合并的步骤合并；优先直接给出方案而非多次往返。"
@@ -263,6 +273,21 @@ class Agent:
                 parts.append(DRIFT_ENV_RULES)
         except Exception:
             pass
+        # v8.33 全局协调协议：轮开始心跳 + 收件箱与冲突注入（跨工作区 Agent 互通）
+        if getattr(self.cfg, "ENABLE_COORDINATION", True):
+            try:
+                from . import coordination as _coord
+                _aid = _coord.self_agent_id(getattr(self.cfg, "workspace", "") or "")
+                _view = _coord.touch(_aid, getattr(self.cfg, "workspace", "") or "",
+                                     status="running",
+                                     model=getattr(self.cfg, "model", ""))
+                _inbox = _coord.pop_inbox(_aid)
+                _conf = _view.get("conflicts") or []
+                parts.append(COORDINATION_RULES)
+                if _inbox or _conf:
+                    parts.append(_coord.render_protocol_block(_aid, _conf, _inbox))
+            except Exception:
+                pass
         # v8.4 UI 自截图确认纪律：制造本地 GUI 后必须截图自检（chat 形态只读不注入）
         if (getattr(self.cfg, "ENABLE_APP_SHOT", True)
                 or getattr(self.cfg, "ENABLE_UI_REVIEW", True)) and mode != "chat":

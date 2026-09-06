@@ -141,7 +141,7 @@ async def execute_aoe(
     # ---- 1. 规划 ----
     try:
         system = PLAN_SYSTEM
-        if cfg.token_mode:
+        if getattr(cfg, "ENABLE_MODES", True) and cfg.token_mode:  # v8.32（F7）：总开关门控
             system += (
                 "\n6. 【Token 计费模式】优先选择调用次数最少的路径，允许合并步骤以最小化节点数。\n"
             )
@@ -237,7 +237,7 @@ async def execute_aoe(
     res.reuse_hits = reuse
 
     # ---- 3. 汇总 ----
-    if cfg.token_mode:
+    if getattr(cfg, "ENABLE_MODES", True) and cfg.token_mode:  # v8.32（F7）：总开关门控
         # 计费模式：跳过额外汇总调用，直接拼接
         parts = [f"[目标] {plan.get('goal', task)}", "[各节点结果]"]
         for n in nodes:

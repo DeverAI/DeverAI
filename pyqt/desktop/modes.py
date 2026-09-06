@@ -10,6 +10,9 @@ import sys
 
 def is_mode_active(cfg) -> list:
     """返回当前生效的模式名列表（供 UI/状态栏展示）。"""
+    # v8.32（F7）：三大模式总开关关闭时不报任何生效模式（修复 ENABLE_MODES 死开关）
+    if not getattr(cfg, "ENABLE_MODES", True):
+        return []
     modes = []
     if cfg.traffic_mode:
         modes.append("traffic")

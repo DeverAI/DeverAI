@@ -65,6 +65,7 @@ SWITCHES = [
     ("ENABLE_AMBIGUOUS_GUARD", "重名/命名不清治理（copilot+worktree发现即要求识别备份转移）"),
     ("ENABLE_WORK_COPY", "工作副本（禁碰=拷贝出去改：copy_user_asset 拷贝用户资产到 workcopy/，原文件不动）"),
     ("ENABLE_UNATTENDED", "不看守模式（禁提问；非危险动作自动放行，危险动作跳过并记入保留进度台账）"),
+    ("ENABLE_COORDINATION", "全局协调协议（跨工作区 Agent 闸口：资源冲突互通+协调看板，防互相踩服务器）"),
 ]
 
 # v8.5.6：参考图内置专家与技能（卡片式展示）
@@ -1382,6 +1383,11 @@ class SettingsDialog(QDialog):
         self.cb_traffic.setChecked(c.traffic_mode)
         self.cb_token.setChecked(c.token_mode)
         self.cb_sleep.setChecked(c.sleep_enabled)
+        # v8.32（F7）：三大模式总开关关闭时禁用三项模式勾选（修复 ENABLE_MODES 死开关）
+        _modes_on = bool(getattr(c, "ENABLE_MODES", True))
+        self.cb_traffic.setEnabled(_modes_on)
+        self.cb_token.setEnabled(_modes_on)
+        self.cb_sleep.setEnabled(_modes_on)
         self.ed_sleep_goal.setText(c.sleep_goal)
         self.ed_sleep_action.setText(c.sleep_action)
         self.cb_sleep_auth.setChecked(c.sleep_authorized)

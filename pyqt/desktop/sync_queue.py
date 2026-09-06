@@ -66,7 +66,7 @@ class SyncQueue(QObject):
         if not cfg.ENABLE_SYNC or not cfg.sync_server_url:
             self.status_changed.emit(f"同步队列 {n}（未配置服务器）")
             return False
-        if cfg.traffic_mode and not force:
+        if getattr(cfg, "ENABLE_MODES", True) and cfg.traffic_mode and not force:  # v8.32（F7）
             self.status_changed.emit(f"同步队列 {n}（流量模式挂起）")
             return False
         with self._lock:

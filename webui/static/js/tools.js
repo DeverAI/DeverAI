@@ -46,7 +46,7 @@ const Approval = {
 const DANGEROUS_PATTERNS = [
   /\brm\s+-[a-z]*[rf]/i, /\bdel\s+\/[sfqi]/i, /\brmdir\s+\/s/i, /\brd\s+\/s\b/i,
   /\bformat\b/i, /\bdiskpart\b/i, /\bmkfs\b/i, /\bdd\s+if=/i, /:\(\)\{/,
-  /\breg\s+delete\b/i, /\bshutdown\b/i, /\breboot\b/i, /powershell\s+-enc/i,
+  /\breg\s+delete\b/i, /\bshutdown\b/i, /\breboot\b/i, /\bpowershell\s+-enc/i,
   /Invoke-Expression/i, /\btaskkill\b(?=[\s\S]*\s\/f(?=\s|$))(?=[\s\S]*\s\/(?:im|pid)\b)/i,
   />\s*\/dev\//i, /\bgit\s+push\s+[\s\S]*--force(?!-with-lease)/i,
   /\bdrop\s+(table|database)/i, /\btruncate\s+table/i,
@@ -1101,6 +1101,14 @@ function getToolDefs(extra = {}) {
     {
       type: 'function',
       function: {
+        name: 'coordination_board',
+        description: 'v8.33 全局协调看板（只读）：本机所有并发 Agent 在干什么、要操作哪些外部资源、有无冲突。跨工作区操作外部资源（如 SSH 服务器）前先看一眼。',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'scan_ambiguous_files',
         description: '扫描重名/命名不清文件（副本/copy/(1)/新建未命名等）。发现文件名奇怪时必须调用，结果请用户逐组识别。',
         parameters: { type: 'object', properties: {}, required: [] },
@@ -1248,6 +1256,7 @@ function getToolDefs(extra = {}) {
     notepad_clear: cfg.ENABLE_NOTEPAD,
     list_checkpoints: cfg.ENABLE_CHECKPOINT,
     copy_user_asset: cfg.ENABLE_WORK_COPY !== false,
+    coordination_board: cfg.ENABLE_COORDINATION !== false,
     // v8.13：delete_file 与桌面一致按 ALLOW_AI_DELETE 开关裁剪（关=不注册给 LLM）
     delete_file: cfg.ALLOW_AI_DELETE,
     // v8.5.x 审查修复：补齐 AOE/子Agent/资产银行的开关裁剪（否则开关关闭工具仍注册给 LLM）
@@ -1370,6 +1379,7 @@ async function executeTool(name, args, ctx) {
       case 'scan_ambiguous_files': return await execScanAmbiguous();
       case 'quarantine_files': return await execQuarantineFiles(args, ctx, cfg);
       case 'copy_user_asset': return await execCopyUserAsset(args, ctx, cfg);
+      case 'coordination_board': return await execCoordinationBoard(args);
       // v8.13.1：Agent 可见开发者网络面板（只读、打码）
       case 'network_list': return execNetworkList(args);
       case 'network_curl': return execNetworkCurl(args);
@@ -1413,6 +1423,26 @@ async function execCopyUserAsset(args, ctx, cfg) {
     return { ok: true, output: `已生成工作副本：${r.copy}（原文件 ${r.src} 保持不变，后续只在副本上操作）。`, meta: { copy: r.copy, src: r.src } };
   } catch (e) {
     return { ok: false, output: '工作副本创建失败: ' + String((e && e.message) || e) };
+  }
+}
+
+/* v8.33 全局协调看板（只读）：跨工作区 Agent 闸口 */
+async function execCoordinationBoard(args) {
+  if (!(FS.mode === 'bridge' && FS.bridge.authorized)) {
+    return { ok: false, output: '需要命令桥授权才能读取协调看板。' };
+  }
+  try {
+    const r = await api('/api/bridge/coordination');
+    if (!r || !r.ok) return { ok: false, output: '读取协调看板失败' };
+    const lines = (r.agents || []).map((a) =>
+      `- ${a.agent_id}（${a.status}）在干什么: ${a.task || '（未声明）'} | 资源: ${(a.resources || []).join(', ') || '无'} | 接下来: ${a.next_action || '（未声明）'}`);
+    let out = '本机并发 Agent（含本端 CLI/桌面）:\n' + (lines.join('\n') || '（无）');
+    if ((r.conflicts || []).length) {
+      out += '\n资源冲突:\n' + r.conflicts.map((c) => `- ${c.key} → ${(c.agents || []).join(' 与 ')}`).join('\n');
+    }
+    return { ok: true, output: out, meta: { snapshot: r } };
+  } catch (e) {
+    return { ok: false, output: '读取协调看板失败: ' + String((e && e.message) || e) };
   }
 }
 

@@ -1,4 +1,5 @@
 """全局配置：加载/保存 data/config.json，含 API 配置、模块开关、阈值、模式、同步。"""
+import os
 import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -10,7 +11,10 @@ from api_keys import get_api_key
 from .storage import load_json, save_json
 
 APP_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = APP_DIR / "data"
+# v8.32：数据目录可用 DEVERAI_DATA_DIR 隔离（与 webui/lite config 同款）——
+# 冒烟测试/多实例共用同一代码副本时不污染真实 pyqt/data；未设置时行为不变。
+# 这也是 Fact.md v8.26 遗留（meta_bridge/proxy 死导入激活）的前置条件。
+DATA_DIR = Path(os.environ.get("DEVERAI_DATA_DIR") or (APP_DIR / "data"))
 CONFIG_PATH = DATA_DIR / "config.json"
 
 
@@ -132,6 +136,7 @@ class Config:
     ENABLE_WORK_COPY: bool = True          # v8.26: 工作副本（copy_user_asset，禁碰=拷贝出去改，原文件不动）
     # ---- 真·算力漂移（v8.27）----
     ENABLE_UNATTENDED: bool = False        # v8.27: 不看守模式（禁提问；非危险自动放行，危险跳过记保留进度台账）
+    ENABLE_COORDINATION: bool = True       # v8.33: 全局协调协议（跨工作区 Agent 闸口+互通+看板）
     drift_upload_mode: str = ""            # v8.27: 漂移上传模式（空=退出时询问；minimal/full 记住后不再问）
     # ---- Agent 形态（v4）----
     agent_mode: str = "builder"         # chat | builder | experts

@@ -116,7 +116,7 @@
 
 [漂移回本地失败路径仍复位] 「漂移回本地」回调不判断拉取/合并结果就 end_drift+finish+解锁 → 服务器不可达时云端产出从未合并进本地，且 finish 复位未回传计数，下次推送用缺消息的本地快照覆盖服务器 → 云端产出永久丢失 → 合并函数必须返回成功状态，仅合并成功才复位漂移状态与只读锁；失败保持锁定并提示重试。
 
-[desktop 别名导入恒失败] webui 服务端写 `from desktop import ...`（bridge/snap_bridge/meta_bridge/proxy/snap_util）——sys.path 只有 repo 根（bridge.py:35 前置），`desktop` 别名不存在，导入恒 ModuleNotFoundError 且被 try/except 静默吞掉 → 功能整体死代码：v8.25 用户资产拦截在 webui 端从未生效（写放行）、/checkpoint/* 一类端点 501 → 服务端懒导入一律用 `from pyqt.desktop import ...`（正确形式见 lite_server.py / bridge.py:1481）；冒烟必须真实调用新接线端点（workcopy 403/200 断言即抓出此类）。遗留同类：meta_bridge/proxy/toolsmith 共 7 处（v8.26 裁决暂不激活，先解决 desktop.config 不认 DEVERAI_DATA_DIR 的数据隔离）。
+[desktop 别名导入恒失败] webui 服务端写 `from desktop import ...`（bridge/snap_bridge/meta_bridge/proxy/snap_util）——sys.path 只有 repo 根（bridge.py:35 前置），`desktop` 别名不存在，导入恒 ModuleNotFoundError 且被 try/except 静默吞掉 → 功能整体死代码：v8.25 用户资产拦截在 webui 端从未生效（写放行）、/checkpoint/* 一类端点 501 → 服务端懒导入一律用 `from pyqt.desktop import ...`（正确形式见 lite_server.py / bridge.py:1481）；冒烟必须真实调用新接线端点（workcopy 403/200 断言即抓出此类）。遗留同类 meta_bridge×3/proxy×1 已于 v8.32 修复激活（toolsmith×3 早于 v8.26 阶段3 修复）；前置「desktop.config 不认 DEVERAI_DATA_DIR」已同轮解除（与 webui/lite 同款 env 重定向，未设置时行为不变）。
 
 [漂移登记线程退出竞态] closeEvent 发起的「登记漂移」QThread fire-and-forget 不等待 → 登记请求可能未发出就关窗（服务器不计数），且解释器退出时 QThread 活销毁 → 关窗路径对关键登记线程有界 wait（2.5s），线程注册模块级保活集合 finished 移除。
 
@@ -160,7 +160,7 @@
 
 [字符串 "false" 被 bool() 判真] 后端确认/开关字段用 `bool(body.get(...))` → `"false"`/`"0"` 全变 True，danger_ok、guard、sessions/begin 等确认协议可被字符串绕过 → 所有“确认/开关”类字段必须严格布尔解析：bool 直接取，字符串仅 1/true/yes/on 为真；三处共用同一 helper。
 
-[危险正则三端手工复制漂移] desktop/tools.py、app/security.py、static/js/tools.js、lite.html 各存一份 DANGEROUS_PATTERNS，修正一处其余照旧 → 同一命令前后端判定不一致（前端漏判+后端放行或反之）→ 新增模式必须四端同步，并用同一组危险/安全样例做断言；Python 侧统一 `re.IGNORECASE|re.DOTALL`，JS 用 `[\s\S]*`，防换行拆分关键词。
+[危险正则三端手工复制漂移] desktop/tools.py、app/security.py、static/js/tools.js、lite.html 各存一份 DANGEROUS_PATTERNS，修正一处其余照旧 → 同一命令前后端判定不一致（前端漏判+后端放行或反之）→ 新增模式必须四端同步，并用同一组危险/安全样例做断言；Python 侧统一 `re.IGNORECASE|re.DOTALL`，JS 用 `[\s\S]*`，防换行拆分关键词。（v8.32 起桌面套件新增四端静态一致性锁 test_dangerous_patterns_four_end_sync——从四份源码抽取清单做集合比对，首跑即抓到 lite.html 的 \bpowershell 漂移并四端统一为强形式。）
 
 [switchEl outerHTML 丢事件] `switchEl(...).outerHTML` 插进 innerHTML → onclick 是 DOM property 不随 outerHTML 序列化，开关变死控件 → 动态控件一律 DOM append，禁止模板字符串 + outerHTML 混用。
 
@@ -219,3 +219,5 @@
 [JSON 端点被当资源 URL 直用] /fs/image 返回 JSON（base64 字段），v8.28 引用卡片却把端点 URL 直接赋给 img.src → 浏览器把 JSON 当图片解码必挂，扑克牌组/单图/lightbox 全部渲染失败，且冒烟无浏览器级断言测不出 → 「供 <img>/资源标签直用」与「供 fetch 解析」是两种契约：资源直用必须返回原始字节（raw 参数 + content-type），JSON 契约保持不变；新端点必须在使用方语义下真实调用一次（v8.29 补 raw 模式 + 4 条冒烟断言）。
 
 [copy2 保留 mtime 破坏下游增量] v8.30 入库用 shutil.copy2（保留源 mtime），而 drift minimal 增量按 mtime > 上次推送基准筛文件 → 拖进来的旧文件永远进不了增量包，续算端工作区缺文件（冒烟测不出，只有顺着时间语义想才看得见）→ 「复制/落盘类动作」必须顺着下游的时间/顺序语义核对一遍：入库类复制用 shutil.copy（新 mtime）或显式 os.utime；同族陷阱还有 Windows 大小写不敏感路径让前缀过滤被 Uploads/ 变体绕过。
+
+[AI 写入指纹登记缺失] file_protect.note_ai_write（AI 写入登记 actor=ai 指纹）定义后全仓库零调用——AI 生成的资产文件（.csv 等）无指纹记录，check_ai_write_block 内 sync_user_modified 把无记录文件补记 actor=human/user_modified，AI 下次编辑被「用户文件保护」永久拦截，且"AI 刚生成可继续改"分支永不生效 → AI 成功写入/编辑用户资产后缀文件后必须登记/刷新指纹（编辑后不刷新会把 AI 自己的编辑误判为用户修改并锁死）；接线点=桌面 tools.py write/edit + webui bridge + webui/lite_server + lite/lite_server（v8.32 五端修复），且仅 is_user_asset(rel) 时登记防状态文件膨胀；配套断言锁闭环（默认拦截→登记放行→用户修改识别→重新锁死→非资产不受影响）。

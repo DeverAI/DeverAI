@@ -27,7 +27,7 @@ _MODELS_LOCK = asyncio.Lock()
 
 def _models():
     try:
-        from desktop import models
+        from pyqt.desktop import models  # v8.32（F3）：desktop 别名在本进程不存在，恒 ModuleNotFoundError
         return models
     except Exception as e:
         # P2-1：异常详情（含本机绝对路径）落 Err.log，对外只回泛化文案
@@ -37,7 +37,7 @@ def _models():
 
 def _matcher():
     try:
-        from desktop import matcher
+        from pyqt.desktop import matcher  # v8.32（F3）：同上，修复别名死导入
         return matcher
     except Exception as e:
         log_error("[web] 匹配引擎模块导入失败", e)
@@ -227,7 +227,7 @@ async def auto_score(body: AutoScoreBody, request: Request, user: dict = Depends
     """
     try:
         from dataclasses import replace as _replace
-        from desktop import auto_score as as_mod
+        from pyqt.desktop import auto_score as as_mod  # v8.32（F3）：修复别名死导入
         from pyqt.desktop.config import get_config as desktop_cfg
     except Exception as e:
         log_error("[web] 自动打分模块导入失败", e)

@@ -432,6 +432,11 @@ def test_unattended_and_keys():
             cut = _time.time()
             _sync.mark_drift_pushed(cut)
             (Path(td) / "c.txt").write_text("new", encoding="utf-8")
+            # v8.32：c.txt 的 mtime 显式锚定到 cut 之后——墙钟（time.time）与 NTFS
+            # mtime 可能被 NTP 步进/时钟回拨反转，令本断言间歇性红（FreqErr #193
+            # 同族：测试不对墙钟做时序假设）。产品侧 drift 增量跨机比较必须用墙钟，
+            # 语义不动，只修测试的确定性。
+            _os.utime(Path(td) / "c.txt", (_time.time() + 60,) * 2)
             up_inc = _sync.build_drift_upload(cfg2, "minimal")
             inc_names = set()
             if up_inc.get("ws_b64"):
@@ -565,6 +570,224 @@ def test_uploads_ingest():
             ck.CHECKPOINT_DIR = old_dir
 
 
+# ------------------------------------------------------------------
+# 1.10) v8.32 修复回归：note_ai_write 指纹登记闭环（此前全仓库零调用）
+# ------------------------------------------------------------------
+def test_note_ai_write_flow():
+    from desktop import file_protect as fpm
+
+    with tempfile.TemporaryDirectory() as td:
+        old_state = fpm.STATE_PATH
+        fpm.STATE_PATH = Path(td) / "file_protect.json"
+        try:
+            ws = Path(td) / "ws"
+            ws.mkdir()
+            (ws / "report.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+            r1 = fpm.check_ai_write_block(str(ws), "report.csv")
+            check("指纹：无记录的用户资产默认拦截", bool(r1))
+            # AI 写入登记后放行（actor=ai，用户没碰过）——修复前此路径恒被锁死
+            fpm.note_ai_write(str(ws), "report.csv")
+            r2 = fpm.check_ai_write_block(str(ws), "report.csv")
+            check("指纹：AI 写入登记后放行（actor=ai）", r2 is None)
+            # 用户外部修改（size 变）→ 重新识别为用户修改并锁死
+            (ws / "report.csv").write_text("a,b\n1,2\n3,4\n", encoding="utf-8")
+            changed = fpm.sync_user_modified(str(ws))
+            check("指纹：用户外部修改被识别", "report.csv" in changed)
+            r3 = fpm.check_ai_write_block(str(ws), "report.csv")
+            check("指纹：用户改过后重新锁死", bool(r3))
+            # 非资产后缀不受影响
+            (ws / "main.py").write_text("print(1)\n", encoding="utf-8")
+            r4 = fpm.check_ai_write_block(str(ws), "main.py")
+            check("指纹：普通文本文件不受资产保护影响", r4 is None)
+        finally:
+            fpm.STATE_PATH = old_state
+
+
+# ------------------------------------------------------------------
+# 1.11) v8.32 修复回归：drift 上传补密钥后缀排除（.pem/.key/.pfx/.p12）
+# ------------------------------------------------------------------
+def test_sync_excl_key_suffix():
+    from desktop import sync as _syncm
+    from desktop.config import Config
+
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "ok.txt").write_text("fine", encoding="utf-8")
+        (Path(td) / "server.pem").write_text("-----BEGIN", encoding="utf-8")
+        sub = Path(td) / "sub"
+        sub.mkdir()
+        (sub / "id_rsa.key").write_text("k", encoding="utf-8")
+        cfg2 = Config()
+        cfg2.workspace = td
+        real_data = _syncm.DATA_DIR
+        _syncm.DATA_DIR = Path(td) / "data"
+        try:
+            up = _syncm.build_drift_upload(cfg2, "full")
+        finally:
+            _syncm.DATA_DIR = real_data
+        manifest = str(up.get("manifest") or "")
+        check("drift 排除：.pem 不入清单", "server.pem" not in manifest)
+        check("drift 排除：子目录 .key 不入清单", "id_rsa.key" not in manifest)
+        check("drift 排除：普通文件照常入清单", "ok.txt" in manifest)
+        import base64 as _b64
+        import io as _io
+        import zipfile as _zipf
+        names = set()
+        if up.get("ws_b64"):
+            with _zipf.ZipFile(_io.BytesIO(
+                    _b64.standard_b64decode(up["ws_b64"]))) as zf:
+                names = set(zf.namelist())
+        check("drift 排除：zip 内无密钥文件",
+              bool(names) and all(not n.endswith((".pem", ".key")) for n in names))
+
+
+# ------------------------------------------------------------------
+# 1.12) v8.32：四端危险正则静态一致性锁（FreqErr「危险正则三端手工复制漂移」）
+# 从四份源码抽取清单做集合比对——任何一端单独加/改正则，测试立即红。
+# ------------------------------------------------------------------
+def _norm_js_pattern(p: str) -> str:
+    # JS 源码与 Python pattern 的等价写法归一：\/ → /，[\s\S] → .（配 DOTALL）
+    return p.replace("\\/", "/").replace("[\\s\\S]", ".")
+
+
+def _extract_py_patterns(path: Path) -> list:
+    import ast as _ast
+    tree = _ast.parse(path.read_text(encoding="utf-8"))
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Assign):
+            for t in node.targets:
+                if getattr(t, "id", "") == "DANGEROUS_PATTERNS":
+                    return [n.value for n in node.value.elts]
+    return []
+
+
+def _extract_js_patterns(path: Path) -> list:
+    import re as _re
+    src = path.read_text(encoding="utf-8")
+    m = _re.search(r"const DANGEROUS_PATTERNS = \[(.*?)\n\];", src, _re.S)
+    body = "\n".join(l for l in m.group(1).split("\n")
+                      if not l.strip().startswith("//"))
+    out, i = [], 0
+    while i < len(body):
+        if body[i] == "/":
+            j = i + 1
+            while j < len(body):
+                if body[j] == "\\":
+                    j += 2
+                    continue
+                if body[j] == "/":
+                    break
+                j += 1
+            k = j + 1
+            while k < len(body) and body[k].isalpha():
+                k += 1
+            out.append(body[i + 1:j])
+            i = k
+        else:
+            i += 1
+    return out
+
+
+def _extract_lite_danger(path: Path) -> list:
+    import re as _re
+    src = path.read_text(encoding="utf-8")
+    m = _re.search(r"const DANGER_RE = /(.*?)/i;", src, _re.S)
+    body = m.group(1)
+    alts, buf, in_cls, depth, i = [], "", False, 0, 0
+    while i < len(body):
+        c = body[i]
+        if c == "\\":
+            buf += body[i:i + 2]
+            i += 2
+            continue
+        if in_cls:
+            if c == "]":
+                in_cls = False
+            buf += c
+            i += 1
+            continue
+        if c == "[":
+            in_cls = True
+            buf += c
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == "|" and depth == 0:
+            alts.append(buf)
+            buf = ""
+            i += 1
+            continue
+        buf += c
+        i += 1
+    alts.append(buf)
+    return alts
+
+
+def test_dangerous_patterns_four_end_sync():
+    repo = Path(__file__).resolve().parent.parent
+    py_desktop = _extract_py_patterns(repo / "pyqt" / "desktop" / "tools.py")
+    py_webui = _extract_py_patterns(repo / "webui" / "app" / "security.py")
+    py_lite = _extract_py_patterns(repo / "lite" / "app" / "security.py")
+    js_webui = _extract_js_patterns(repo / "webui" / "static" / "js" / "tools.js")
+    lite_html = _extract_lite_danger(repo / "lite" / "static" / "lite.html")
+    check("四端正则：desktop 清单抽取非空（当前 28 条）", len(py_desktop) >= 20)
+    base = set(py_desktop)
+    check("四端正则：webui security 一致", set(py_webui) == base)
+    check("四端正则：lite security 一致", set(py_lite) == base)
+    check("四端正则：js tools.js 一致（等价写法归一后）",
+          set(map(_norm_js_pattern, js_webui)) == base)
+    check("四端正则：lite.html DANGER_RE 一致（顶层交替切分后）",
+          set(map(_norm_js_pattern, lite_html)) == base)
+    # 孪生副本第二份 lite.html 同步核对（webui/static/lite.html）
+    lite_html2 = _extract_lite_danger(repo / "webui" / "static" / "lite.html")
+    check("四端正则：webui 孪生 lite.html 一致",
+          set(map(_norm_js_pattern, lite_html2)) == base)
+
+
+# ------------------------------------------------------------------
+# 1.8) v8.33 全局协调协议：注册/冲突/收件箱/TTL 回收/命令嗅探（无 Qt）
+# ------------------------------------------------------------------
+def test_coordination():
+    from desktop import coordination as coord
+
+    with tempfile.TemporaryDirectory() as td:
+        old_path = coord.STATE_PATH
+        coord.STATE_PATH = Path(td) / "coordination.json"
+        try:
+            a = coord.self_agent_id(td)
+            coord.touch(a, td, status="running", task="部署到 mindog",
+                        resources=["ssh:mindog"])
+            b = "other@999"
+            v2 = coord.touch(b, td + "/other", status="running", task="上传日志",
+                             resources=["ssh://mindog"], next_action="重启 nginx")
+            check("协调：跨工作区同资源识别冲突（ssh: 前缀归一）",
+                  any(c.get("key") == "mindog" for c in v2.get("conflicts") or []))
+            snap = coord.snapshot(a)
+            check("协调：看板含两个存活 Agent", len(snap.get("agents") or []) == 2)
+            check("协调：冲突对列出双方",
+                  any(set(c.get("agents") or []) == {a, b}
+                      for c in snap.get("conflicts") or []))
+            inbox = coord.pop_inbox(a)
+            check("协调：收件箱含协议消息", len(inbox) >= 1
+                  and "上传日志" in str((inbox[0] or {}).get("text")))
+            check("协调：收件箱读后清空", coord.pop_inbox(a) == [])
+            check("协调：命令嗅探 ssh 主机（含 sshpass 混杂命令）",
+                  "ssh:1.2.3.4" in coord.resources_from_command(
+                      "sshpass -p x ssh root@1.2.3.4 'ls'"))
+            check("协调：嗅探忽略本机回环",
+                  coord.resources_from_command("ssh localhost echo hi") == [])
+            data = coord._load()
+            for e in (data.get("agents") or {}).values():
+                e["last_seen"] = (e.get("last_seen") or 0) - 99999
+            coord._save(data)
+            snap2 = coord.snapshot(a)
+            check("协调：TTL 过期回收离线 Agent", not (snap2.get("agents") or []))
+        finally:
+            coord.STATE_PATH = old_path
+
+
 def main():
     failures = 0
     try:
@@ -603,6 +826,13 @@ def main():
         traceback.print_exc()
         FAILED.append(f"checkpoint_keep 异常: {e}")
     try:
+        test_coordination()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"coordination 异常: {e}")
+    try:
         test_changes_bar()
     except Exception as e:  # noqa: BLE001
         failures += 1
@@ -616,6 +846,27 @@ def main():
         import traceback
         traceback.print_exc()
         FAILED.append(f"uploads_ingest 异常: {e}")
+    try:
+        test_note_ai_write_flow()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"note_ai_write_flow 异常: {e}")
+    try:
+        test_sync_excl_key_suffix()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"sync_excl_key_suffix 异常: {e}")
+    try:
+        test_dangerous_patterns_four_end_sync()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"dangerous_patterns_four_end_sync 异常: {e}")
     try:
         test_gui()
     except Exception as e:  # noqa: BLE001

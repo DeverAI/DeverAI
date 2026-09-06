@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth
 from .config import DATA_DIR, get_config, init_config
 from .security import is_dangerous_cmd
-from .storage import save_text
+from .storage import save_text, sniff_crlf  # v8.32：行尾保持（对齐 webui/bridge 纪律）
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"  # lite/static/
 
@@ -663,6 +663,22 @@ async def fs_write(body: dict, user: dict = Depends(auth.current_user)):
     p = _resolve(rel)
     if _is_protected(p, _workspace()):
         raise HTTPException(403, "该文件属于系统受保护文件，禁止写入")
+    # v8.32（F6）：用户文件保护后端强制——此前只在前端 lite.html 拦截，裸调 API 可
+    # 整体绕过（FreqErr「保护只做桥端，FSS/直连全绕过」）；从 webui lite_server
+    # 副本同源移植。Lite 保持轻量：仅服务端拦截，无任何 UI/路由新增。
+    try:
+        import sys as _sys
+        _repo_root = Path(__file__).resolve().parent.parent.parent
+        if str(_repo_root) not in _sys.path:
+            _sys.path.insert(0, str(_repo_root))
+        from pyqt.desktop import file_protect as _fp
+        _reason = _fp.check_ai_write_block(str(_workspace()), rel)
+        if _reason:
+            raise HTTPException(403, _reason)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     if p.is_dir():
         raise HTTPException(400, "path 指向目录，无法写入文件")
     content = str(body.get("content") or "")
@@ -671,10 +687,18 @@ async def fs_write(body: dict, user: dict = Depends(auth.current_user)):
 
     def _write() -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
-        save_text(p, content)
+        # v8.32（F6）：行尾保持（此前 Lite 副本漏同源，编辑 CRLF 文件整体被改写行尾）
+        save_text(p, content, crlf=sniff_crlf(p))
 
     # v8.14：同步磁盘 IO 移入线程池
     await asyncio.to_thread(_write)
+    # v8.32（F1）：AI 写入成功后登记指纹（actor=ai）
+    try:
+        from pyqt.desktop import file_protect as _fpn
+        if _fpn.is_user_asset(rel):
+            _fpn.note_ai_write(str(_workspace()), rel)
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -775,6 +799,21 @@ async def run_command(body: dict, user: dict = Depends(auth.current_user)):
     #（lite.html 危险命令 confirm 通过后置 danger_ok=true；裸调 API 的破坏性命令被拦截）
     if is_dangerous_cmd(cmd) and not _to_bool(body.get("danger_ok")):
         raise HTTPException(403, "危险命令需在界面确认后执行")
+    # v8.32（F6）：用户文件保护后端强制（同 fs/write，命令触碰用户资产直接拦截）
+    try:
+        import sys as _sys2
+        _repo_root2 = Path(__file__).resolve().parent.parent.parent
+        if str(_repo_root2) not in _sys2.path:
+            _sys2.path.insert(0, str(_repo_root2))
+        from pyqt.desktop import file_protect as _fp2
+        _hits = _fp2.command_touches_user_asset(cmd, str(_workspace()))
+        if _hits:
+            raise HTTPException(403, "[用户文件保护] 命令涉及用户手工资产（"
+                                + "、".join(_hits[:5]) + "），AI不允许执行。请先一键备份，由用户手动执行。")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     cwd = _workspace()
     rel = str(body.get("cwd") or "")
     if rel:

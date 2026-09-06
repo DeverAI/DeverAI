@@ -56,7 +56,7 @@ DANGEROUS_PATTERNS = [
     r"\brm\s+-[a-z]*[rf]", r"\bdel\s+/[sfqi]", r"\brmdir\s+/s", r"\brd\s+/s\b",
     r"\bformat\b", r"\bdiskpart\b",
     r"\bmkfs\b", r"\bdd\s+if=", r":\(\)\{", r"\breg\s+delete\b", r"\bshutdown\b", r"\breboot\b",
-    r"powershell\s+-enc", r"Invoke-Expression", r"\btaskkill\b(?=.*\s/f(?=\s|$))(?=.*\s/(?:im|pid)\b)",
+    r"\bpowershell\s+-enc", r"Invoke-Expression", r"\btaskkill\b(?=.*\s/f(?=\s|$))(?=.*\s/(?:im|pid)\b)",
     r">\s*/dev/", r"\bgit\s+push\s+.*--force(?!-with-lease)",
     r"\bdrop\s+(table|database)", r"\btruncate\s+table",
     # v8.13：执行代码/脚本的等价危险形式
@@ -528,6 +528,16 @@ async def tool_write_file(args, ctx: ToolContext) -> dict:
         _snap.update_tree(_snap.current_round(), str(rel), new_size, "write")
     except Exception:
         pass
+    # v8.32 修复（F1）：AI 写入成功后登记指纹（actor=ai）。此前 note_ai_write
+    # 全仓库零调用——AI 生成的资产文件（如 .csv）无记录，check_ai_write_block 内
+    # sync_user_modified 会把它补记为 human/user_modified，AI 下次编辑被永久拦截。
+    if getattr(ctx.cfg, "ENABLE_USER_FILE_PROTECT", True):
+        try:
+            from . import file_protect as _fpn
+            if _fpn.is_user_asset(str(rel)):
+                _fpn.note_ai_write(ctx.workspace, str(rel))
+        except Exception:
+            pass
     return {
         "ok": True,
         "output": f"已写入 {rel}（{len(content.splitlines())} 行，{new_size} 字节）"
@@ -633,6 +643,15 @@ async def tool_edit_file(args, ctx: ToolContext) -> dict:
         _snap.update_tree(_snap.current_round(), str(rel), len(new_text.encode("utf-8")), "write")
     except Exception:
         pass
+    # v8.32 修复（F1）：AI 编辑成功后刷新指纹（mtime/size 已变，不刷新则下次
+    # 同步会把 AI 自己的编辑误判为用户外部修改并锁死）
+    if getattr(ctx.cfg, "ENABLE_USER_FILE_PROTECT", True):
+        try:
+            from . import file_protect as _fpn
+            if _fpn.is_user_asset(str(rel)):
+                _fpn.note_ai_write(ctx.workspace, str(rel))
+        except Exception:
+            pass
     return {"ok": True, "output": f"已编辑 {rel}：替换 {count} 处" if replace_all and count > 1 else f"已编辑 {rel}：替换 1 处",
             "meta": {"path": str(rel).replace("\\", "/"), "replaced": count, "old": old_str, "new": new_str}}
 
@@ -970,6 +989,19 @@ async def tool_run_command(args, ctx: ToolContext) -> dict:
                                    + "），AI不允许执行相关命令（防覆盖用户修改）。"
                                      "请先提示用户“一键备份完整工作区”，并由用户手动执行该命令；"
                                      "如确需AI执行，请用户备份后在审批中明确授权。")}
+        except Exception:
+            pass
+
+    # v8.33 全局协调：命令触碰外部资源（ssh/scp/rsync 等）时登记心跳与资源（冲突下一轮注入）
+    if getattr(ctx.cfg, "ENABLE_COORDINATION", True):
+        try:
+            from . import coordination as _coord
+            _hits = _coord.resources_from_command(cmd)
+            if _hits:
+                _coord.touch(_coord.self_agent_id(ctx.workspace or ctx.cfg.workspace),
+                             ctx.workspace or ctx.cfg.workspace,
+                             status="running", resources=_hits,
+                             next_action=cmd[:200])
         except Exception:
             pass
     # v8.5.x 审查修复：移除 LLM 可控的 _pre_approved 绕过——审批门是否放行统一由
@@ -2772,6 +2804,63 @@ async def tool_copy_user_asset(args, ctx: ToolContext) -> dict:
             "meta": {"copy": info["rel"], "src": info["src"]}}
 
 
+async def tool_coordination_board(args, ctx: ToolContext) -> dict:
+    """v8.33 全局协调看板（只读）：本机所有并发 Agent 在干什么 + 外部资源冲突。"""
+    from . import coordination as _coord
+    ws = ctx.workspace or (ctx.cfg.workspace if ctx.cfg else "")
+    snap = _coord.snapshot(_coord.self_agent_id(ws))
+    lines = []
+    for a in snap.get("agents") or []:
+        lines.append(f"- {a.get('agent_id', '')}（{a.get('status', '')}）"
+                     f"在干什么: {a.get('task') or '（未声明）'} | "
+                     f"资源: {', '.join(a.get('resources') or []) or '无'} | "
+                     f"接下来: {a.get('next_action') or '（未声明）'}")
+    out = "本机并发 Agent（含本 Agent）:\n" + "\n".join(lines or ["（无）"])
+    if snap.get("conflicts"):
+        out += "\n资源冲突:\n" + "\n".join(
+            f"- {c.get('key')} → {' 与 '.join(c.get('agents') or [])}"
+            for c in snap["conflicts"])
+    return {"ok": True, "output": out, "meta": {"snapshot": snap}}
+
+
+async def tool_coordination_declare(args, ctx: ToolContext) -> dict:
+    """v8.33 协调协议：声明本 Agent 的任务/外部资源/下一步 → 即时返回冲突与收件箱消息。
+
+    协议语义：你在干什么？我在干什么？你接下来要干什么？我接下来要干什么？
+    冲突时由双方收件箱互达，破坏性操作（重启/停服/批量删除）必须先经用户确认。
+    """
+    block = _readonly_block("coordination_declare")
+    if block:
+        return block
+    if not getattr(ctx.cfg, "ENABLE_COORDINATION", True):
+        return {"ok": False, "output": "全局协调未开启（ENABLE_COORDINATION）。"}
+    from . import coordination as _coord
+    ws = ctx.workspace or (ctx.cfg.workspace if ctx.cfg else "")
+    aid = _coord.self_agent_id(ws)
+    res = args.get("resources")
+    res_list = res if isinstance(res, list) else ([str(res)] if res else [])
+    snap = _coord.touch(aid, ws, status="running",
+                        task=str(args.get("task") or "") or None,
+                        resources=[str(x) for x in res_list],
+                        next_action=str(args.get("next_action") or "") or None,
+                        throttle=False)
+    inbox = _coord.pop_inbox(aid)
+    lines = []
+    for c in snap.get("conflicts") or []:
+        lines.append(f"[冲突] 资源「{c.get('key')}」正被 {c.get('agent_id')}"
+                     f"（工作区 {c.get('workspace_name')}，在干什么: {c.get('task') or '（未声明）'}；"
+                     f"接下来: {c.get('next_action') or '（未声明）'}）使用——"
+                     "请错峰/等待/经用户确认后再操作。")
+    for m in inbox:
+        lines.append(f"[收件箱 {m.get('ts')}] 来自 {m.get('from')}:\n{m.get('text')}")
+    out = ("已声明 —— 在干什么: %s；资源: %s；接下来: %s。\n" % (
+        str(args.get("task") or "（未声明）"),
+        "、".join(str(x) for x in res_list) or "（无）",
+        str(args.get("next_action") or "（未声明）")))
+    out += ("\n".join(lines) if lines else "当前无冲突、无新消息。")
+    return {"ok": True, "output": out, "meta": {"conflicts": snap.get("conflicts") or []}}
+
+
 async def tool_port_refs(args, ctx: ToolContext) -> dict:
     """v6 隐患 2 修正：精确定位端口号引用（文件:行号+片段），明确禁止盲替。"""
     port = str(args.get("port") or "").strip()
@@ -3588,6 +3677,29 @@ def build_tool_defs(cfg: Config, expert_mode: bool = False, allow_delegate: bool
                 }, ["path"]),
             },
         })
+    if getattr(cfg, "ENABLE_COORDINATION", True) and not readonly:
+        defs.append({
+            "type": "function",
+            "function": {
+                "name": "coordination_declare",
+                "description": "v8.33 协调协议：声明本 Agent 在干什么/要操作哪些外部资源（如 ssh:host）/接下来要干什么 → 即时返回资源冲突与对方 Agent 的信息。跨工作区操作服务器等外部资源前必须先声明。",
+                "parameters": _p({
+                    "task": {"type": "string", "description": "当前任务简述"},
+                    "resources": {"type": "array", "items": {"type": "string"},
+                                   "description": "要操作的外部资源（如 ssh:主机名 / url）"},
+                    "next_action": {"type": "string", "description": "接下来要做什么"},
+                }, []),
+            },
+        })
+    if getattr(cfg, "ENABLE_COORDINATION", True):
+        defs.append({
+            "type": "function",
+            "function": {
+                "name": "coordination_board",
+                "description": "v8.33 全局协调看板（只读）：本机所有并发 Agent 在干什么、要操作哪些外部资源、有无冲突。跨工作区操作外部资源前先看一眼。",
+                "parameters": _p({}, []),
+            },
+        })
     if getattr(cfg, "ENABLE_AMBIGUOUS_GUARD", True):
         defs.append({
             "type": "function",
@@ -3807,6 +3919,8 @@ TOOL_MATCH = {
     "scan_ambiguous_files": ["重名", "重复文件", "命名不清", "文件名奇怪", "副本", "copy", "(1)", "ambiguous", "scan duplicate"],
     "quarantine_files": ["隔离", "转移", "备份转移", "quarantine", "整理重复文件"],
     "copy_user_asset": ["工作副本", "生成副本", "拷贝一份", "copy_user_asset", "副本处理"],
+    "coordination_board": ["协调看板", "谁在用什么", "并发Agent", "coordination", "全局看板"],
+    "coordination_declare": ["声明资源", "协调", "我要操作服务器", "declare", "占坑"],
     "ui_get_control_info": ["控件信息", "控件详情", "control info", "元素信息"],
 }
 
@@ -3822,7 +3936,8 @@ def select_tools(cfg: Config, defs: list, todo_text: str, expert: bool = False) 
     """v5 工具裁剪：仅 token 计费模式生效。按当前待办/任务文本与工具匹配序列做
     轻量匹配（低内存→子串；否则走 matcher 三级引擎 char/bm25/api，阈值 0.35），
     并上基础工具集。非计费模式原样返回（不裁剪）。expert=True 时写工具保底保留。"""
-    if not getattr(cfg, "token_mode", False):
+    if not (getattr(cfg, "ENABLE_MODES", True) and getattr(cfg, "token_mode", False)):
+        # v8.32（F7）：三大模式总开关关闭时 token 计费裁剪不再生效（修复死开关）
         return defs
     text = (todo_text or "").strip().lower()
     if not text:
@@ -3959,6 +4074,8 @@ TOOL_HANDLERS = {
     "scan_ambiguous_files": tool_scan_ambiguous_files,
     "quarantine_files": tool_quarantine_files,
     "copy_user_asset": tool_copy_user_asset,
+    "coordination_board": tool_coordination_board,
+    "coordination_declare": tool_coordination_declare,
     # ---- v6.6 浏览器控制（外交型）
     "browser_open": tool_browser_open,
     "browser_read": tool_browser_read,

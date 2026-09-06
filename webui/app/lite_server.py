@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth
 from .config import DATA_DIR, get_config, init_config
 from .security import is_dangerous_cmd
-from .storage import save_text
+from .storage import save_text, sniff_crlf  # v8.32：行尾保持（对齐 bridge.py v8.26）
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"  # webui/static/
 
@@ -669,10 +669,18 @@ async def fs_write(body: dict, user: dict = Depends(auth.current_user)):
 
     def _write() -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
-        save_text(p, content)
+        # v8.32（F6）：行尾保持——此前 Lite 副本漏同源，编辑 CRLF 文件会被整体改写行尾
+        save_text(p, content, crlf=sniff_crlf(p))
 
     # v8.14：同步磁盘 IO 移入线程池
     await asyncio.to_thread(_write)
+    # v8.32（F1）：AI 写入成功后登记指纹（actor=ai；同 bridge.py）
+    try:
+        from pyqt.desktop import file_protect as _fpn
+        if _fpn.is_user_asset(rel):
+            _fpn.note_ai_write(str(_workspace()), rel)
+    except Exception:
+        pass
     return {"ok": True}
 
 

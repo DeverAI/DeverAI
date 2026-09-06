@@ -251,6 +251,27 @@ def smoke_version(res: _Res, tag: str, entry_dir: Path, port: int,
                       wtrav.status_code in (400, 403),
                       f"status={wtrav.status_code}")
 
+        # S8.6 v8.32 Lite 后端用户资产保护 + 行尾保持（此前仅前端拦截/无行尾保持）
+        if tag == "lite":
+            wblk2 = client.post("/api/bridge/fs/write",
+                                json={"path": "deck.pptx", "content": "junk"})
+            res.check(f"{tag}: Lite 后端用户资产 fs/write 被拦(403)",
+                      wblk2.status_code == 403, f"status={wblk2.status_code}")
+            (ws_path / "deck2.pptx").write_bytes(b"PK\x03\x04 lite fake")
+            ev3, st3 = sse_run(client, base, {"command": "copy deck2.pptx deck3.pptx"})
+            res.check(f"{tag}: Lite 后端命令触碰用户资产被拦(403)",
+                      st3 == 403, f"status={st3}")
+            (ws_path / "crlf.txt").write_bytes(b"a\r\nb\r\n")
+            wcrlf = client.post("/api/bridge/fs/write",
+                                json={"path": "crlf.txt", "content": "x\ny"})
+            crlf_ok = False
+            if wcrlf.status_code == 200:
+                try:
+                    crlf_ok = (ws_path / "crlf.txt").read_bytes() == b"x\r\ny"
+                except OSError:
+                    crlf_ok = False
+            res.check(f"{tag}: Lite fs/write 保持 CRLF 行尾", crlf_ok)
+
         # S9 run_command SSE 安全命令
         events, status = sse_run(client, base, {"command": "echo smoke_ok_marker_9001"})
         rc_val = None
@@ -361,6 +382,24 @@ def smoke_version(res: _Res, tag: str, entry_dir: Path, port: int,
                 res.check(f"{tag}: fs/image JSON 契约不变(ui_review)",
                           r_json.status_code == 200 and bool((r_json.json() or {}).get("base64")),
                           f"status={r_json.status_code}")
+
+                # v8.32 meta_bridge 死导入修复：模型注册表端点复活（此前恒 501）
+                gm = client.get("/api/bridge/models")
+                res.check(f"{tag}: /api/bridge/models 200（死导入修复）",
+                          gm.status_code == 200 and isinstance((gm.json() or {}).get("models"), list),
+                          f"status={gm.status_code} body={str(gm.text)[:100]}")
+                pm = client.post("/api/bridge/models",
+                                 json={"id": "smoke-model", "name": "Smoke", "kind": "chat"})
+                res.check(f"{tag}: /api/bridge/models 新增 200",
+                          pm.status_code == 200 and (pm.json() or {}).get("ok") is True,
+                          f"status={pm.status_code} body={str(pm.text)[:100]}")
+                # desktop.config 认 DEVERAI_DATA_DIR：注册表落隔离数据目录而非真实 pyqt/data
+                res.check(f"{tag}: desktop.config 隔离（models.json 落 DEVERAI_DATA_DIR）",
+                          (data_dir / "models.json").is_file(),
+                          f"data_dir={data_dir}")
+                pdm = client.delete("/api/bridge/models/smoke-model")
+                res.check(f"{tag}: /api/bridge/models 清理 200",
+                          pdm.status_code == 200, f"status={pdm.status_code}")
 
             # v8.22 外部 API 代理：SSRF 校验拒绝路径（不做真实外网请求）
             ep0 = client.post("/api/llm/ext_proxy", json={})

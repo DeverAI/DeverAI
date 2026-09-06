@@ -2158,6 +2158,8 @@ class DeverAIApp(QMainWindow):
         cmds.append({"type": "action", "label": "切换模式: chat", "data": lambda: self._set_mode("chat")})
         cmds.append({"type": "action", "label": "切换模式: builder", "data": lambda: self._set_mode("builder")})
         cmds.append({"type": "action", "label": "切换模式: experts", "data": lambda: self._set_mode("experts")})
+        cmds.append({"type": "action", "label": "全局协调看板（跨工作区 Agent 闸口）",
+                     "data": self._open_coordination_board})
         cmds.append({"type": "action", "label": "打开设置", "data": self._open_settings})
         cmds.append({"type": "action", "label": "清空会话", "data": self._clear_history})
         cmds.append({"type": "action", "label": "选择工作区目录", "data": self._pick_workspace})
@@ -2193,6 +2195,12 @@ class DeverAIApp(QMainWindow):
         """v8.2：版本回退对话框（按文件选择历史版本恢复）。"""
         from .ide_extras import VersionRestoreDialog
         dlg = VersionRestoreDialog(self, self._restore_checkpoint_cb)
+        dlg.exec()
+
+    def _open_coordination_board(self):
+        """v8.33 全局协调看板：跨工作区 Agent 闸口（人类可在损害发生前直接叫停）。"""
+        from .ide_extras import CoordinationBoardDialog
+        dlg = CoordinationBoardDialog(self, self.cfg.workspace if self.cfg else "")
         dlg.exec()
 
     def _restore_checkpoint_cb(self, bak_path: str, rel_path: str):
@@ -3537,7 +3545,8 @@ class DeverAIApp(QMainWindow):
         self.agent_thread.resolve_approval(call_id, accepted)
 
     def _check_sleep_goal(self, result):
-        if not (self.cfg.sleep_enabled and self.cfg.sleep_goal and self.cfg.sleep_authorized):
+        if not (getattr(self.cfg, "ENABLE_MODES", True) and self.cfg.sleep_enabled
+                and self.cfg.sleep_goal and self.cfg.sleep_authorized):  # v8.32（F7）：总开关门控
             return
         final_text = getattr(result, "text", "") or ""
         if modes_mod.goal_reached(self.cfg.sleep_goal, final_text):

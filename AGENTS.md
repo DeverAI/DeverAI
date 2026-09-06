@@ -79,7 +79,7 @@
 ### [DeverAI] webui 缓存破坏版本号漏 bump
 - **现象**：v8.17/v8.18 修改 panels.js/fs.js/tools.js/agent.js 但 index.html 的 `?v=` 未更新，浏览器旧缓存 JS 静默缺新功能。
 - **可能的远因**：改动只动 js 文件本体，忘记同步 index.html 引用行。
-- **解决方法**：凡改 webui/static/js/ 下文件，必须同步 bump index.html 对应 `?v=`（当前统一 8.23.0）。
+- **解决方法**：凡改 webui/static/js/ 下文件，必须同步 bump index.html 对应 `?v=`（统一 bump 全部 17 处；v8.32 起当前为 8.32.0）。
 - **类型**：工作区专属
 
 ### [DeverAI] browser_ctl 会话假启动（global 缺失）
@@ -92,6 +92,18 @@
 - **现象**：webui 服务从 webui/ 目录启动时，bridge 端点内 `from pyqt.desktop import ...` 抛 ModuleNotFoundError → 500。
 - **可能的远因**：cwd=webui 时 repo 根不在 sys.path；懒导入错误发生在 try 块外直接冒泡。
 - **解决方法**：bridge.py 模块级把 repo 根插入 sys.path（v8.23 已加）；懒导入尽量放进 try 块。
+- **类型**：工作区专属
+
+### [DeverAI] AI 生成资产被用户保护误锁（note_ai_write 零接线）
+- **现象**：AI 刚生成的 .csv 等用户资产后缀文件，下一次 edit_file 被「用户文件保护」拦截并要求走 copy_user_asset；桌面/网页/Lite 同现。
+- **可能的远因**：file_protect.note_ai_write 定义后全仓库零调用——AI 写入无 actor=ai 指纹，check_ai_write_block 内 sync_user_modified 把无记录文件补记为 human/user_modified。
+- **解决方法**：AI 成功 write/edit 用户资产后缀文件后登记/刷新指纹（编辑后必须刷新，否则 AI 自己的编辑被误判为用户修改）；v8.32 五端接线（桌面 tools.py + webui bridge + 两个 lite_server），并有闭环回归断言。
+- **类型**：工作区专属
+
+### [DeverAI] drift 增量测试墙钟脆弱（间歇红）
+- **现象**：test_unattended_and_keys 的「cutoff 后新文件入包」间歇性失败，隔离复现恒绿（v8.32 收口时两连红）。
+- **可能的远因**：time.time() 墙钟与 NTFS mtime 之间可能被 NTP 步进/时钟回拨反转，测试对墙钟做了时序假设（FreqErr「同模块混用 time 基准」同族）。
+- **解决方法**：测试内显式 os.utime 锚定 mtime（cut+60s）保证确定性；产品侧 drift 增量跨机比较必须用墙钟，语义不动（v8.32 修测试并注明）。
 - **类型**：工作区专属
 
 ---

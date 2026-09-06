@@ -176,6 +176,9 @@ def build_drift_upload(cfg, mode: str, since: float = None) -> dict:
                 "build", ".worktrees"}
     excl_suf = {".pyc", ".pyo", ".tmp"}
     excl_name = {"config.json", "err.log", "api.txt", "api_keys.py", ".env"}
+    # v8.32（F5）：补密钥后缀排除——此前只有 5 个文件名，.pem/.key 等密钥文件可
+    # 绕道进漂移包（uploads_ingest 注释声称与此处"同源"，实际并不同源）
+    excl_key_suf = (".pem", ".key", ".pfx", ".p12")
 
     def _wanted(p, ws: _P):
         rel = p.relative_to(ws)
@@ -185,6 +188,9 @@ def build_drift_upload(cfg, mode: str, since: float = None) -> dict:
             return False
         # v8.27 阶段3：任意层级命中敏感名不入包（防明文密钥/运行数据外带）
         if any(str(part).lower() in excl_name for part in rel.parts):
+            return False
+        # v8.32（F5）：任意层级命中密钥后缀不入包（对齐 uploads_ingest 敏感后缀）
+        if any(str(part).lower().endswith(excl_key_suf) for part in rel.parts):
             return False
         return True
 

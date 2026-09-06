@@ -55,7 +55,7 @@ async def compress_history(
     if not cfg.ENABLE_SUBAGENT:
         return messages, False
     threshold = cfg.compress_threshold_tokens
-    if cfg.token_mode:  # Token 计费模式：激进压缩
+    if getattr(cfg, "ENABLE_MODES", True) and cfg.token_mode:  # v8.32（F7）：总开关门控
         threshold = max(2000, threshold // 2)
     total = sum(_msg_tokens(m) for m in messages)
     if total <= threshold:

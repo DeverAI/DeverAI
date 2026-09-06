@@ -912,6 +912,14 @@ async def fs_write(body: dict, user: dict = Depends(current_user)):
     p.parent.mkdir(parents=True, exist_ok=True)
     # v8.26 行尾保持（对齐桌面 sniff_crlf 纪律）：既有文件按原行尾风格写回，新文件原样
     save_text(p, content, crlf=sniff_crlf(p))
+    # v8.32（F1）：AI 写入成功后登记指纹（actor=ai），防 AI 生成的资产文件被误标
+    # user_modified 永久锁死（与桌面 tool_write_file 同步接线）
+    try:
+        from pyqt.desktop import file_protect as _fpn
+        if _fpn.is_user_asset(rel):
+            _fpn.note_ai_write(str(_workspace()), rel)
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -941,6 +949,17 @@ async def fs_workcopy(body: dict, user: dict = Depends(current_user)):
     if not ok:
         raise HTTPException(400, str(info))
     return {"ok": True, "copy": info["rel"], "src": info["src"]}
+
+
+@router.get("/coordination")
+async def coordination_board(user: dict = Depends(current_user)):
+    """v8.33 全局协调看板（只读）：本机所有并发 Agent 的任务/资源/下一步 + 资源冲突。"""
+    try:
+        from pyqt.desktop import coordination as _coord
+    except Exception as e:
+        log_error("[web] coordination 导入失败", e)
+        raise HTTPException(501, "当前环境不支持协调看板")
+    return _coord.snapshot(_coord.self_agent_id(str(get_config().bridge_workspace or "")))
 
 
 @router.post("/fs/mkdir")

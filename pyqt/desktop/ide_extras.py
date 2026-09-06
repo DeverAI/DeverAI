@@ -791,3 +791,80 @@ class RoundRestoreDialog(QDialog):
             self._load()
         else:
             QMessageBox.warning(self, "删除失败", "无法删除该会话。")
+
+
+# ==========================================================================
+# v8.33 全局协调看板（跨工作区 Agent 闸口；人类可在损害发生前直接叫停）
+# ==========================================================================
+class CoordinationBoardDialog(QDialog):
+    """本机所有并发 Agent 的任务/资源/下一步实时表格；冲突 Agent 行高亮。"""
+
+    def __init__(self, parent=None, workspace: str = ""):
+        super().__init__(parent)
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import (
+            QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QPushButton,
+            QTableWidget, QVBoxLayout,
+        )
+        self.setWindowTitle("全局协调看板（跨工作区 Agent 闸口）")
+        self.resize(900, 440)
+        self._ws = workspace or ""
+        lay = QVBoxLayout(self)
+        hint = QLabel("本机所有并发 Agent 在干什么/要操作哪些外部资源/接下来干什么；冲突行高亮——"
+                      "人类可在损害发生前直接叫停对应 Agent。")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self.table = QTableWidget(0, 6, self)
+        self.table.setHorizontalHeaderLabels(
+            ["Agent", "状态", "在干什么", "外部资源", "接下来", "最近活跃"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnWidth(0, 170)
+        self.table.setColumnWidth(1, 64)
+        self.table.setColumnWidth(2, 220)
+        self.table.setColumnWidth(3, 170)
+        self.table.setColumnWidth(4, 170)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        btn = QPushButton("刷新")
+        btn.clicked.connect(self.refresh)
+        row.addWidget(btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.refresh()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.refresh)
+        self._timer.start(5000)
+
+    def refresh(self):
+        from PyQt6.QtGui import QColor
+        from . import coordination as coord
+        try:
+            snap = coord.snapshot(coord.self_agent_id(self._ws))
+        except Exception as e:
+            self.table.setRowCount(0)
+            self.table.setRowCount(1)
+            self.table.setItem(0, 0, QTableWidgetItem(f"读取失败: {e}"))
+            return
+        in_conflict = set()
+        for c in snap.get("conflicts") or []:
+            for aid2 in c.get("agents") or []:
+                in_conflict.add(aid2)
+        agents = snap.get("agents") or []
+        self.table.setRowCount(len(agents))
+        import datetime as _dt
+        for i, a in enumerate(agents):
+            seen = a.get("last_seen") or 0
+            vals = [
+                str(a.get("agent_id", "")),
+                str(a.get("status", "")),
+                str(a.get("task", "") or "（未声明）"),
+                ", ".join(a.get("resources") or []) or "无",
+                str(a.get("next_action", "") or "（未声明）"),
+                _dt.datetime.fromtimestamp(seen).strftime("%H:%M:%S") if seen else "",
+            ]
+            for j, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                if str(a.get("agent_id", "")) in in_conflict:
+                    it.setBackground(QColor(255, 96, 64, 70))
+                self.table.setItem(i, j, it)
