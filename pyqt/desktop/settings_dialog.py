@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 
 from . import sync as sync_mod
 from . import themes as themes_mod
-from .config import Config, CONFIG_PATH
+from .config import Config, CONFIG_PATH, AGENT_PRESETS
 from .icons import icon as svg_icon
 from .llm import test_connection
 from .models import (ModelInfo, load_models, get_model, upsert_model,
@@ -309,6 +309,19 @@ class SettingsDialog(QDialog):
             cb = QCheckBox(label)
             self.switches[key] = cb
             mv.addWidget(cb)
+        # v8.36：Agent+ 模式预设 GUI 入口（决策 143；CLI --preset 已有，同一 AGENT_PRESETS 源）
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Agent+ 预设"))
+        self.cb_preset = QComboBox()
+        self.cb_preset.addItem("自定义（当前勾选为准）", "")
+        for _pname, _p in AGENT_PRESETS.items():
+            self.cb_preset.addItem(_pname + "（" + _p["desc"][:22] + "…）", _pname)
+        self.cb_preset.setCurrentIndex(0)
+        preset_row.addWidget(self.cb_preset, 1)
+        self.btn_preset = QPushButton("应用")
+        self.btn_preset.clicked.connect(self._apply_agent_preset)
+        preset_row.addWidget(self.btn_preset)
+        mv.addLayout(preset_row)
         v.addWidget(g_mod)
 
         # ---- 阈值 ----
@@ -1366,6 +1379,31 @@ class SettingsDialog(QDialog):
     def _apply_provider(self, base, model):
         self.ed_base.setText(base)
         self.ed_model.setText(model)
+
+    def _apply_agent_preset(self):
+        """v8.36：应用 Agent+ 模式预设（决策 143 的 GUI 入口，与 CLI --preset 同源）。
+
+        就地改 cfg（与其它控件一致；取消由 _cfg_backup 回滚，确定时统一落盘），
+        并刷新受影响控件让用户立刻看到效果。"""
+        name = str(self.cb_preset.currentData() or "")
+        p = AGENT_PRESETS.get(name)
+        if not p:
+            return
+        for k, val in p.get("flags", {}).items():
+            if hasattr(self.cfg, k):
+                setattr(self.cfg, k, val)
+        for key, cb in self.switches.items():
+            cb.setChecked(bool(getattr(self.cfg, key)))
+        self.cb_traffic.setChecked(bool(self.cfg.traffic_mode))
+        self.cb_token.setChecked(bool(self.cfg.token_mode))
+        self.cb_sleep.setChecked(bool(self.cfg.sleep_enabled))
+        # v8.37：应用后即时反馈——否则用户不知道无人值守已生效（AI 将不再提问）
+        if getattr(self.cfg, "ENABLE_UNATTENDED", False):
+            QMessageBox.information(
+                self, "预设已应用",
+                "无人值守模式已生效：AI 将不再提问，非危险动作自动执行，\n"
+                "危险动作跳过并记入工作区 unattended_progress.json 台账。\n"
+                "对话进行中可看到 [不看守] 跳过提示；恢复交互请切回 daily 预设或取消勾选不看守。")
 
     def _load(self):
         c = self.cfg

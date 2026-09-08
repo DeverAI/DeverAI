@@ -183,6 +183,8 @@ class CliSession:
             elif typ == "guard":
                 ok = bool(ev.get("ok"))
                 print(f"\n{C.YELLOW}守卫: {'通过' if ok else '注意'}: {ev.get('note', '')}{C.RST}")
+            elif typ == "coordination":
+                print(f"\n{C.YELLOW}[全局协调] {ev.get('note', '')}{C.RST}")
             elif typ == "ctx_gate":
                 s = ev.get("stats") or {}
                 print(f"\n{C.DIM}[上下文守门] 保留 {s.get('kept', 0)} 块 / 禁 {len(ev.get('banned', []) or [])} 块{C.RST}")
@@ -222,6 +224,10 @@ class CliSession:
                     except Exception:
                         ok = False
                     self.approval.resolve(str(ev.get("call_id") or ""), ok)
+            elif typ == "unattended_skip":
+                # v8.37：不看守跳过实时透出（与 GUI ai_note 同语义）
+                print(f"\n{C.YELLOW}[不看守] 已跳过 {ev.get('tool', '')}: "
+                      f"{ev.get('brief', '')}（已记入台账）{C.RST}")
             elif typ == "run_error":
                 self._err_emitted = True
                 print(f"\n{C.RED}运行错误: {ev.get('message', '')}{C.RST}")

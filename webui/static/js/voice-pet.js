@@ -53,6 +53,9 @@
   var chatHistory = null;
   var textInput = null;
   var micBtn = null;
+  var camBtn = null;
+  var camVideo = null;
+  var camStream = null;   // v8.36：摄像头 MediaStream——仅用户显式开启；关面板即断
   var statusEl = null;
 
   // ── 状态 ──
@@ -167,11 +170,16 @@
         '<span class="task-count">任务: 0</span>' +
         '<div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>' +
       '</div>' +
+      '<div id="' + NS + '-cam-wrap" style="display:none;">' +
+        '<video id="' + NS + '-cam-video" autoplay playsinline muted style="width:100%;border-radius:8px;background:#000;"></video>' +
+        '<div style="font-size:11px;opacity:.7;margin:2px 0 6px;">摄像头已开启——仅在你点「看」或说「看一下」时抓一帧发给模型；关闭面板即断开。</div>' +
+      '</div>' +
       '<div id="' + NS + '-status-bar">' +
         '<span id="' + NS + '-status-text">就绪</span>' +
         '<span id="' + NS + '-mode-label">反馈模式</span>' +
       '</div>' +
       '<div class="' + NS + '-input-row">' +
+        '<button class="mic" id="' + NS + '-cam-btn" title="摄像头：腾不出手时让小龙看（点「看」或说「看一下」才抓一帧）" aria-label="摄像头">看</button>' +
         '<button class="mic" id="' + NS + '-mic-btn" title="语音输入" aria-label="语音输入">' +
           '<span data-icon="voice" data-size="14"></span>' +
         '</button>' +
@@ -189,6 +197,8 @@
     chatHistory = document.getElementById(NS + "-history");
     textInput = document.getElementById(NS + "-text-input");
     micBtn = document.getElementById(NS + "-mic-btn");
+    camBtn = document.getElementById(NS + "-cam-btn");
+    camVideo = document.getElementById(NS + "-cam-video");
     statusEl = document.getElementById(NS + "-status-text");
 
     // 绑定面板内事件
@@ -198,6 +208,7 @@
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleTextSend(); }
     });
     micBtn.addEventListener("click", toggleVoiceInput);
+    if (camBtn) camBtn.addEventListener("click", toggleCam);
   }
 
   // ── 事件绑定 ──
@@ -258,6 +269,7 @@
   function closePanel() {
     if (!panel) return;
     panel.setAttribute("data-hidden", "true");
+    stopCam();   // v8.36：关面板即断开摄像头流（隐私默认收窄）
   }
 
   // ── 宠物显隐 ──
@@ -332,10 +344,11 @@
     var summary = data.summary || data || {};
     var el = document.getElementById(NS + "-task-summary");
     if (!el) return;
-    var pending = summary.pending || 0;
-    var done = summary.done || 0;
-    var total = summary.total || 0;
-    var avg = summary.avgProgress || 0;
+    // v8.35：数字归一后再进 innerHTML——防被篡改/异常响应夹带字符串（FreqErr #152 防御面）
+    var pending = Number(summary.pending) || 0;
+    var done = Number(summary.done) || 0;
+    var total = Number(summary.total) || 0;
+    var avg = Number(summary.avgProgress) || 0;
     el.innerHTML =
       '<span class="task-count">任务: ' + pending + ' 待办 / ' + done + ' 完成 / ' + total + ' 总计</span>' +
       '<div class="progress-bar"><div class="progress-fill" style="width:' + avg + '%"></div></div>';
@@ -412,6 +425,92 @@
     if (_state === "listening") updateMood("idle");
   }
 
+  // ── v8.36 摄像头交互（硬件短接/烧录等腾不出手场景）──
+  // 隐私边界：流只在用户显式点「看」后建立；帧仅在用户点「看」或说「看一下」时抓取一张；
+  // 关闭面板即断开流。不上传任何画面，除非当次抓帧。
+  function toggleCam() {
+    if (camStream) { stopCam(); return; }
+    startCam();
+  }
+
+  async function startCam() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      appendMessage("system", "当前浏览器不支持摄像头（需 HTTPS 或 localhost 环境）。");
+      return;
+    }
+    try {
+      camStream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 } }, audio: false });
+      if (camVideo) {
+        camVideo.srcObject = camStream;
+        camVideo.style.display = "block";
+      }
+      var w = document.getElementById(NS + "-cam-wrap");
+      if (w) w.style.display = "block";
+      if (camBtn) camBtn.setAttribute("data-active", "true");
+      appendMessage("system", "摄像头已开启：点「看」按钮或对我说「看一下」，我就看一眼画面。");
+    } catch (e) {
+      appendMessage("system", "摄像头打开失败: " + ((e && e.message) || e) + "（需浏览器授权，且页面为 HTTPS/localhost）");
+    }
+  }
+
+  function stopCam() {
+    if (camStream) {
+      camStream.getTracks().forEach(function (t) { t.stop(); });
+      camStream = null;
+    }
+    if (camVideo) camVideo.srcObject = null;
+    var w = document.getElementById(NS + "-cam-wrap");
+    if (w) w.style.display = "none";
+    if (camBtn) camBtn.setAttribute("data-active", "false");
+  }
+
+  function captureFrame() {
+    if (!camStream || !camVideo || !camVideo.videoWidth) return null;
+    var maxW = 768;   // 控制帧体积：768 宽 JPEG q0.7 通常 < 200KB
+    var scale = Math.min(1, maxW / camVideo.videoWidth);
+    var c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(camVideo.videoWidth * scale));
+    c.height = Math.max(1, Math.round(camVideo.videoHeight * scale));
+    c.getContext("2d").drawImage(camVideo, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.7);
+  }
+
+  function lookAndProcess(userText) {
+    var frame = captureFrame();
+    if (!frame) {
+      appendMessage("system", "摄像头未开启：先点「看」按钮打开摄像头。");
+      return;
+    }
+    // v8.37：对话流里补用户侧消息——否则回复突然出现，用户不确定小龙看的是哪一帧
+    appendMessage("user", "[摄像头] 已发送当前画面" + (userText ? "：" + userText : ""));
+    apiPostConversation("user", "（摄像头画面）" + (userText || "看一下当前画面")).catch(function () {});
+    updateMood("thinking");
+    var sys = "你是 DeverAI 悬浮助手「小龙」的视觉通道。用户正腾不出手打字（典型：硬件短接/烧录/接线操作中）。" +
+      "根据画面与用户的话判断现状，给出简短结论；若用户想要的操作条件已在画面中就绪，最后一句明确写「条件就绪，可以执行」。" +
+      "画面可能不清晰：看不清就直说看不清，禁止编造。";
+    var msg = { role: "user", content: [
+      { type: "text", text: (userText || "看一下现在的画面") },
+      { type: "image_url", image_url: { url: frame } },
+    ] };
+    llmChat({ messages: [{ role: "system", content: sys }, msg], stream: false, temperature: 0.2, max_tokens: 600 })
+      .then(function (res) {
+        var reply = (res && (res.text || res.content)) || "（视觉模型无回复）";
+        appendMessage("assistant", reply);
+        apiPostConversation("assistant", reply).catch(function () {});
+        if (App.config.ENABLE_VOICE_ASSISTANT && "speechSynthesis" in window) speak(reply);
+        updateMood("happy");
+        // 视觉确认就绪 → 走既有决策链（可进 agent_loop 用工具真正执行，如开始烧录）
+        if (/条件就绪|可以执行/.test(reply)) {
+          decideAndProcess((userText ? "用户说：" + userText + "。" : "") + "【小龙看到画面】" + reply);
+        }
+        loadProgress();
+      })
+      .catch(function (e) {
+        appendMessage("assistant", "看画面失败: " + ((e && e.message) || e) + "（看图需要支持视觉的模型）");
+        updateMood("sad");
+      });
+  }
+
   // ── 处理输入（统一入口） ──
   function processInput(text) {
     updateMood("thinking");
@@ -444,6 +543,7 @@
   function parseIntent(text) {
     var patterns = [
       { id: "read_status", regex: [/读取状态/, /任务多少/, /查看任务/, /进度如何/, /在做什么/, /当前状态/, /status/, /progress/, /list tasks/] },
+      { id: "look", regex: [/看一下/, /看一眼/, /看画面/, /拍(一)?张/, /拍个照/, /拍照/, /打开摄像头/, /开摄像头/, /open camera/i] },
       { id: "add_task", regex: [/添加任务[：:]\s*(.+)/, /新建任务[：:]\s*(.+)/, /插入任务[：:]\s*(.+)/, /add task[:\s]+(.+)/i, /new task[:\s]+(.+)/i], capture: true },
       { id: "complete_task", regex: [/完成(第?[一二三四五12345]?)个?任务/, /完成任务/, /done/, /finish/, /complete\s+(.+)/i], capture: true },
       { id: "delete_task", regex: [/删除任务[：:]\s*(.+)/, /移除任务[：:]\s*(.+)/, /delete task[:\s]+(.+)/i], capture: true },
@@ -475,6 +575,11 @@
   // ── 执行意图 ──
   async function executeIntent(intent, rawText) {
     switch (intent.id) {
+      case "look": {
+        // v8.36：抓一帧 → 视觉模型 → 就绪则自动进决策链（可接 agent_loop 真正执行）
+        lookAndProcess(intent.raw || "");
+        return { ok: true, message: "" };
+      }
       case "read_status":
       case "query_progress": {
         var prog = await apiGetJSON("/api/bridge/voice-pet/progress");

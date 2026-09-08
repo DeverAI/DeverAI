@@ -521,6 +521,22 @@ def test_changes_bar():
         check("变更采集：工具结果事件正常发出",
               any(e.get("type") == "tool_result" and e.get("ok") for e in events))
 
+        # v8.37：取消/异常轮的 file_changes 由 run wrapper 兜底透出（工具副作用已发生须可见）
+        async def _fake_inner(*a, **k):
+            ag._changes.append({"path": "cancel.txt", "action": "write_file"})
+            raise asyncio.CancelledError()
+
+        ag._run_inner = _fake_inner
+        events.clear()
+        try:
+            asyncio.run(ag.run("触发取消"))
+        except asyncio.CancelledError:
+            pass
+        check("取消轮：wrapper 兜底透出 file_changes",
+              any(e.get("type") == "file_changes"
+                  and any(c.get("path") == "cancel.txt" for c in (e.get("changes") or []))
+                  for e in events))
+
 
 # ------------------------------------------------------------------
 # 1.9) v8.30 上传入库（方案1）：ingest 单元 + checkpoint 跳过 uploads/
@@ -895,6 +911,87 @@ def test_coordination_board_dialog():
             coord.STATE_PATH = old_path
 
 
+# ------------------------------------------------------------------
+# 1.15) v8.35：专家逐个上看板 + 冲突给人类发消息 + 嗅探不污染意图字段
+# ------------------------------------------------------------------
+def test_coordination_experts_and_notify():
+    import asyncio
+    from desktop import coordination as coord
+    from desktop.config import Config
+    from desktop.agent import Agent
+
+    with tempfile.TemporaryDirectory() as td:
+        old_path, old_persist = coord.STATE_PATH, dict(coord._LAST_PERSIST)
+        coord.STATE_PATH = Path(td) / "coordination.json"
+        coord._LAST_PERSIST.clear()
+        try:
+            # A：uid 语义
+            check("协调A：无后缀 uid = 基 id", coord.agent_uid(td) == coord.self_agent_id(td))
+            check("协调A：身份后缀拼接",
+                  coord.agent_uid(td, "专家·部署").endswith("/专家·部署"))
+            base = coord.self_agent_id(td)
+            check("协调A：后缀内斜杠消毒（不产生层级）",
+                  coord.agent_uid(td, "a/b") == base + "/a_b")
+            # 对端（另一工作区）占用 ssh:mindog
+            other = coord.agent_uid(td + "_other", None)
+            coord.touch(other, td + "_other", status="running", task="上传日志",
+                        resources=["ssh:mindog"])
+            cfg = Config()
+            cfg.workspace = td
+            cfg.ENABLE_DIFF_PREVIEW = False
+            cfg.ENABLE_CHECKPOINT = False
+            cfg.ENABLE_SESSION_SNAP = False
+            cfg.ENABLE_UNATTENDED = True
+            events = []
+
+            async def _cap(ev):
+                events.append(ev)
+
+            ag = Agent(cfg, emit=_cap)
+            # 主 Agent 上一轮嗅探过 ssh:mindog（注册表已有资源键）
+            coord.touch(coord.self_agent_id(td), td, resources=["ssh:mindog"])
+            ag._todo_text = "重启 mindog 上的服务"
+            ag._build_system_prompt()   # 轮开始：touch + 冲突挂实例
+            check("协调B：轮开始检测到冲突并挂实例",
+                  bool(getattr(ag, "_coord_conflicts", None)))
+            asyncio.run(ag._coord_notify())
+            ev1 = [e for e in events if e.get("type") == "coordination"]
+            check("协调B：冲突转成人类可见事件（含对方准备做什么）",
+                  bool(ev1) and "mindog" in str(ev1[0].get("note"))
+                  and "上传日志" in str(ev1[0].get("note")))
+            asyncio.run(ag._coord_notify())
+            check("协调B：同一组冲突不重复发",
+                  len([e for e in events if e.get("type") == "coordination"]) == 1)
+            # A：专家 Agent 单独成行，task=其准备做的事
+            ag_sub = Agent(cfg, emit=_cap, is_sub=True, sub_label="专家·部署", expert_id="Deployer")
+            ag_sub._todo_text = "部署新版"
+            ag_sub._build_system_prompt()
+            ids = [a.get("agent_id") for a in (coord.snapshot(ag._coord_uid()).get("agents") or [])]
+            check("协调A：顶层与专家各自成行",
+                  ag._coord_uid() in ids and ag_sub._coord_uid() in ids)
+            rows = [a for a in (coord.snapshot(ag_sub._coord_uid()).get("agents") or [])
+                    if a.get("agent_id") == ag_sub._coord_uid()]
+            check("协调A：专家行 task=其准备做的事", bool(rows) and rows[0].get("task") == "部署新版")
+            # 资源登记不污染 task（意图字段留给 declare/轮开始）
+            coord.touch(ag_sub._coord_uid(), td, resources=["ssh:mindog"])
+            rows2 = [a for a in (coord.snapshot(ag_sub._coord_uid()).get("agents") or [])
+                     if a.get("agent_id") == ag_sub._coord_uid()]
+            check("协调A：资源登记不污染 task", bool(rows2) and rows2[0].get("task") == "部署新版")
+            # 完成态：子=done / 顶层=idle
+            ag_sub._coord_idle()
+            st = [a.get("status") for a in (coord.snapshot(ag_sub._coord_uid()).get("agents") or [])
+                  if a.get("agent_id") == ag_sub._coord_uid()]
+            check("协调A：子 Agent 完成置 done", st == ["done"])
+            ag._coord_idle()
+            st2 = [a.get("status") for a in (coord.snapshot(ag._coord_uid()).get("agents") or [])
+                   if a.get("agent_id") == ag._coord_uid()]
+            check("协调A：顶层完成置 idle", st2 == ["idle"])
+        finally:
+            coord.STATE_PATH = old_path
+            coord._LAST_PERSIST.clear()
+            coord._LAST_PERSIST.update(old_persist)
+
+
 def main():
     failures = 0
     try:
@@ -988,6 +1085,13 @@ def main():
         import traceback
         traceback.print_exc()
         FAILED.append(f"coordination_registry 异常: {e}")
+    try:
+        test_coordination_experts_and_notify()
+    except Exception as e:  # noqa: BLE001
+        failures += 1
+        import traceback
+        traceback.print_exc()
+        FAILED.append(f"coordination_experts_and_notify 异常: {e}")
     try:
         # 必须排在 test_gui 之后（复用其 QApplication 单例）
         test_coordination_board_dialog()

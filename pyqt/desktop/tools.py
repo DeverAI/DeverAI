@@ -996,12 +996,16 @@ async def tool_run_command(args, ctx: ToolContext) -> dict:
     if getattr(ctx.cfg, "ENABLE_COORDINATION", True):
         try:
             from . import coordination as _coord
+            # v8.35（A）：登记到发起命令的那个 Agent 的行上（专家/子Agent 带身份后缀）；
+            # v8.35（A）用户裁决：看板是「准备做什么事情」，原始命令不再覆盖「接下来」意图字段。
+            _ag = ctx.agent
+            _sub = (getattr(_ag, "sub_label", "") or None) if (
+                _ag is not None and getattr(_ag, "is_sub", False)) else None
+            _ws2 = ctx.workspace or (ctx.cfg.workspace if ctx.cfg else "")
             _hits = _coord.resources_from_command(cmd)
             if _hits:
-                _coord.touch(_coord.self_agent_id(ctx.workspace or ctx.cfg.workspace),
-                             ctx.workspace or ctx.cfg.workspace,
-                             status="running", resources=_hits,
-                             next_action=cmd[:200])
+                _coord.touch(_coord.agent_uid(_ws2, _sub), _ws2,
+                             status="running", resources=_hits)
         except Exception:
             pass
     # v8.5.x 审查修复：移除 LLM 可控的 _pre_approved 绕过——审批门是否放行统一由
@@ -4178,6 +4182,16 @@ async def _request_approval(ctx: ToolContext, tool: str, payload: dict) -> bool:
     if getattr(cfg, "ENABLE_UNATTENDED", False):
         if payload.get("dangerous") or is_dangerous(payload):
             _unattended_note(ctx, tool, payload)
+            # v8.37：跳过动作实时透出到聊天区（用户不必等 AI 最终汇报才知道）
+            try:
+                await _emit(ctx, {"type": "unattended_skip", "tool": tool,
+                                  "brief": str(payload.get("command")
+                                               or payload.get("path")
+                                               or payload.get("label")
+                                               or payload.get("files")
+                                               or tool)[:200]})
+            except Exception:
+                pass
             return False
         return True
     if tool in DIPLOMATIC_TOOLS:

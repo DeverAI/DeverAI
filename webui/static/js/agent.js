@@ -622,7 +622,7 @@ async function runSession(userText) {
     const isAbort = (e && e.name === 'AbortError') || Agent.aborted;
     endedBadly = true;  // v8.12：错误/取消轮 → commit 保留回退点
     if (isAbort) {
-      emit({ type: 'run_cancelled' });
+      emit({ type: 'run_cancelled', changes: (Agent.changes || []).slice(-50) });
     } else {
       // 错误回滚：弹出本次 runSession 追加的脏消息（user/assistant），
       // 用户主动停止不回滚（已产生的部分输出可能有用）

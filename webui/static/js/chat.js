@@ -611,12 +611,19 @@ function onAgentEvent(ev) {
       flushAI();
       toast('运行出错: ' + (ev.message || ''), 'err', 5000);
       break;
+    case 'unattended_skip':  // v8.37 不看守跳过实时提示
+      appendAIText('\n\n> [不看守] 已跳过 ' + esc(ev.tool || '') + ': '
+                   + esc(ev.brief || '') + '（已记入 unattended_progress.json 台账）');
+      flushAI();
+      break;
     case 'run_cancelled':
       setAIStatus('⏹ 已停止');
       setChatSub('已停止');
       // v8.14：与 run_done 同理，先解除 busy 再 flush
       setBusyUI(false);
       flushAI();
+      // v8.37：取消轮的文件改动同样渲染变更栏（工具副作用已发生，用户须可见）
+      if (Array.isArray(ev.changes) && ev.changes.length) renderChangeLog(ev.changes);
       break;
     default:
       break;

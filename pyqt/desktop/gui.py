@@ -1224,6 +1224,8 @@ class ChatPanel(QWidget):
             self.ai_note(f"× 子Agent「{label}」失败: {ev.get('message','')}")
         elif t == "tool_start":
             self.ai_note(f"  [{ev.get('name')}] …")
+        elif t == "coordination":   # v8.35（B）：专家检测到的跨工作区冲突，人类可见
+            self.ai_note(f"[全局协调]「{label}」：" + str(ev.get("note", "")))
 
     def clear(self):
         self.view.clear()
@@ -3295,6 +3297,8 @@ class DeverAIApp(QMainWindow):
                                         ev.get("banned") or [])
             elif t == "guard":
                 self.chat.add_guard(bool(ev.get("ok")), ev.get("note", ""))
+            elif t == "coordination":   # v8.35（B）：跨工作区资源冲突，给人类的可见消息
+                self.chat.ai_note("[全局协调] " + str(ev.get("note", "")))
             elif t == "text_delta":
                 self.chat.append_ai(ev.get("content", ""))
             elif t == "tool_start":
@@ -3305,6 +3309,9 @@ class DeverAIApp(QMainWindow):
                 self.chat.finish_tool(ev.get("call_id"), ev.get("ok"), ev.get("output"), ev.get("meta"))
             elif t == "file_changes":  # v8.29 变更栏
                 self.chat.render_change_log(ev.get("changes") or [])
+            elif t == "unattended_skip":  # v8.37 不看守跳过实时提示
+                self.chat.ai_note(f"[不看守] 已跳过 {ev.get('tool', '')}: "
+                                  f"{ev.get('brief', '')}（已记入 unattended_progress.json 台账）")
             elif t == "cmd_output":
                 self.chat.tool_output(ev.get("call_id"), ev.get("line", ""))
                 self.terminal.append(ev.get("line", ""))
@@ -3883,7 +3890,18 @@ class DeverAIApp(QMainWindow):
             if t is not None:
                 # v8.27 阶段3：漂移退出可能上传全工作区（客户端预算 144MB/服务器 192MB），
                 # 等待上限对齐上传窗口 90s——2.5s 会杀掉上传线程使退出上传形同虚设
+                # v8.37：等待期间常驻提示 + 结果反馈（否则窗口像卡死，用户会强杀进程）
+                self.statusBar().showMessage(
+                    "算力漂移：正在上传工作状态到服务器（最长 90 秒，请勿强杀进程）…")
                 t.wait(90_000)
+                res = getattr(t, "res", {}) or {}
+                if res.get("ok"):
+                    self.statusBar().showMessage("算力漂移上传完成，正在退出…", 4000)
+                else:
+                    self.statusBar().showMessage(
+                        "算力漂移上传失败/超时："
+                        + str(res.get("message", ""))[:120]
+                        + "（工作仍在本地，可下次再推）", 8000)
         except Exception:
             pass
         w = self.editors._worker

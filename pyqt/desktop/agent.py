@@ -277,12 +277,12 @@ class Agent:
         if getattr(self.cfg, "ENABLE_COORDINATION", True):
             try:
                 from . import coordination as _coord
-                _aid = _coord.self_agent_id(getattr(self.cfg, "workspace", "") or "")
+                # v8.35（A）：专家/子Agent 用带身份后缀的 uid——每个专家看板上单独一行
+                _aid = self._coord_uid() or _coord.self_agent_id(getattr(self.cfg, "workspace", "") or "")
                 _view = _coord.touch(_aid, getattr(self.cfg, "workspace", "") or "",
                                      status="running",
-                                     # v8.34（H2b）：带上本轮任务——此前只登记 status/model，
-                                     # 看板「在干什么」列恒为（未声明），要等 AI 自愿 declare
-                                     # 才有内容，违背"检查每一个并发 Agent 在做什么"的初衷。
+                                     # v8.34（H2b）/v8.35（A）：task=「准备做什么事情」（本轮任务/
+                                     # 专家任务），不是手上那条命令——命令级信息只进资源嗅探。
                                      task=(getattr(self, "_todo_text", "") or "")[:300] or None,
                                      model=getattr(self.cfg, "model", ""))
                 _inbox = _coord.pop_inbox(_aid)
@@ -290,6 +290,9 @@ class Agent:
                 parts.append(COORDINATION_RULES)
                 if _inbox or _conf:
                     parts.append(_coord.render_protocol_block(_aid, _conf, _inbox))
+                # v8.35（B）：冲突挂到实例，由 run() 主循环转成人类可见事件
+                # （_build_system_prompt 是同步方法，不能在这里 await emit）
+                self._coord_conflicts = _conf
             except Exception:
                 pass
         # v8.4 UI 自截图确认纪律：制造本地 GUI 后必须截图自检（chat 形态只读不注入）
@@ -336,11 +339,45 @@ class Agent:
         serial: Optional[bool] = None,
         qa_reply: bool = False,
     ) -> AgentResult:
+        # v8.37：取消/异常轮的文件改动同样进变更栏（工具副作用已发生，用户须可见）——
+        # 正常收尾由 _run_inner 自身的 file_changes/run_done 负责；此处只兜异常冒出路径。
+        try:
+            return await self._run_inner(
+                user_message,
+                current_file=current_file,
+                max_rounds=max_rounds,
+                serial=serial,
+                qa_reply=qa_reply,
+            )
+        except BaseException:
+            try:
+                if self._changes:
+                    await self._emit({"type": "file_changes",
+                                      "changes": list(self._changes[-50:])})
+            except Exception:
+                pass
+            try:
+                self._coord_idle()
+            except Exception:
+                pass
+            raise
+
+    async def _run_inner(
+        self,
+        user_message: str,
+        *,
+        current_file: Optional[str] = None,
+        max_rounds: int = 10,
+        serial: Optional[bool] = None,
+        qa_reply: bool = False,
+    ) -> AgentResult:
         self._cancel.clear()
         self._artifacts = []
         self._loop = asyncio.get_running_loop()  # v8.14：cancel() 线程安全用
         self._todo_text = user_message  # v5: 工具裁剪依据
         self._changes = []                       # v8.29 变更栏每轮重置
+        self._coord_notified = set()             # v8.35（B）：冲突通知去重（每个新键集合报一次）
+        self._coord_conflicts = None             # v8.35（B）：防上一轮残留误报
         # 主对话：解析主模型注册表条目（独立 url/api_key 生效 + 空/无效回退第一个 chat 模型）
         if not self.expert_id and not self.is_sub:
             try:
@@ -383,6 +420,7 @@ class Agent:
                 break
             rounds += 1
             system = self._build_system_prompt(current_file)
+            await self._coord_notify()   # v8.35（B）：冲突给人类发消息（gui/CLI 可见）
             msgs = [{"role": "system", "content": system}] + messages
             try:
                 text, calls, finish, usage, visible_tools = await self._consume_stream(msgs)
@@ -799,20 +837,56 @@ class Agent:
         await self._maybe_vault_eval()
         self._artifacts = []
 
-    def _coord_idle(self) -> None:
-        """v8.34（H11）：轮结束把协调注册表状态置 idle（仅顶层 Agent，防子 Agent 抖动）。
+    def _coord_uid(self) -> str:
+        """v8.35（A）：本 Agent 在协调注册表里的全局 id。
 
-        v8.33 自述的已知边界「轮与轮之间 status 保留 running 至 TTL 过期」在此收口：
-        人类看板要能区分"正在跑"与"跑完了"，否则"损害发生前叫停"没有判断依据。
-        失败不阻塞主流程。"""
-        if self.is_sub or not getattr(self.cfg, "ENABLE_COORDINATION", True):
+        顶层 Agent = 「工作区名@pid」；专家/子Agent 追加身份后缀（sub_label）——
+        用户裁决「每个专家的情况要汇总到看板」，逐个可见而非共用一行。"""
+        try:
+            from . import coordination as _coord
+        except Exception:
+            return ""
+        sub = (getattr(self, "sub_label", "") or "") if self.is_sub else ""
+        return _coord.agent_uid(getattr(self.cfg, "workspace", "") or "", sub or None)
+
+    def _coord_idle(self) -> None:
+        """v8.34（H11）/v8.35（A）：轮结束更新协调状态——顶层置 idle，专家/子Agent 置 done
+        （看板保留至 TTL 自然回收，供人类回看谁做了什么）。失败不阻塞主流程。"""
+        if not getattr(self.cfg, "ENABLE_COORDINATION", True):
             return
         try:
             from . import coordination as _coord
             ws = getattr(self.cfg, "workspace", "") or ""
-            _coord.touch(_coord.self_agent_id(ws), ws, status="idle", throttle=False)
+            uid = self._coord_uid()
+            if not uid:
+                return
+            _coord.touch(uid, ws,
+                         status="done" if self.is_sub else "idle", throttle=False)
         except Exception:
             pass
+
+    async def _coord_notify(self) -> None:
+        """v8.35（B）：把本轮检测到的资源冲突转成人类可见事件（用户裁决「包要发消息的」）。
+
+        gui/CLI 均有 coordination 渲染分支；专家的经 subagent 包装到达（chat.sub_event
+        有对应分支）。同一 run 内同一组冲突键只报一次，键集合变化再报。"""
+        cc = getattr(self, "_coord_conflicts", None)
+        if not cc:
+            return
+        keys = tuple(sorted(str(c.get("key") or "") for c in cc))
+        notified = getattr(self, "_coord_notified", None)
+        if notified is None:
+            notified = set()
+            self._coord_notified = notified
+        if keys in notified:
+            return
+        notified.add(keys)
+        try:
+            from . import coordination as _coord
+            note = _coord.conflict_note(cc)
+        except Exception:
+            note = "；".join(str(c.get("key") or "") for c in cc)
+        await self._emit({"type": "coordination", "note": note})
 
     def cancel(self) -> None:
         # v8.14：asyncio.Event 非线程安全，必须经 call_soon_threadsafe 投递到 loop 线程

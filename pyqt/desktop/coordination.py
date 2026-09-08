@@ -52,6 +52,14 @@ def self_agent_id(workspace: str) -> str:
     return f"{name}@{os.getpid()}"
 
 
+def agent_uid(workspace: str, sub: str = None) -> str:
+    """v8.35（A）：协调注册表全局 id。顶层 Agent = 「工作区名@pid」；专家/子Agent 追加
+    身份后缀——用户裁决「每个专家的情况要汇总到看板」，逐个可见而非共用一行。"""
+    base = self_agent_id(workspace)
+    s = str(sub or "").strip().replace("/", "_")[:40]
+    return f"{base}/{s}" if s else base
+
+
 def norm_resource(s: str) -> str:
     """资源归一化键：小写、去协议头（含 ssh: 裸前缀与 x:// 形式）/空白/尾斜杠，截 120 字符。
 
@@ -321,3 +329,12 @@ def render_protocol_block(agent_id: str, conflicts: list, inbox: list) -> str:
     lines.append("协调要求：与对方错峰或等待；重启/停服/批量删除等破坏性操作必须先经用户确认；"
                  "用 coordination_declare 更新你的任务/资源/下一步，让对方也能看到。")
     return "\n".join(lines)
+
+
+def conflict_note(conflicts: list) -> str:
+    """v8.35（B）：给人类的冲突摘要（chat 事件用）——对方「准备做什么」，不是执行中的命令。"""
+    lines = []
+    for c in conflicts or []:
+        lines.append(f"资源「{c.get('key')}」正被 {c.get('agent_id')}"
+                     f"（工作区 {c.get('workspace_name', '')}，准备做：{c.get('task') or '未声明'}）使用")
+    return "；".join(lines) + "。已通知双方错峰；重启/停服/批量删除等破坏性操作必须经用户确认。", 

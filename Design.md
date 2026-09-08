@@ -516,11 +516,16 @@ RPC 处理器（`harness.handle`）：`deverai.fs.tree`、`deverai.assets.search
 ### 6.18 全局协调协议：跨工作区 Agent 闸口（v8.33）
 
 144. **全局协调协议（v8.33，用户裁决「加一个全局闸口：检查每个并发 Agent 在做什么；冲突就让两个 Agent 互通信息；信息人类也要能看到，在损害发生前直接阻止」）**：工作区内并发已有租约锁/文件分区调度，但**跨工作区的外部资源**（典型：两个不同工作区的 Agent 同时 SSH 同一服务器，一个重启、一个上传中掉线）无任何协调。新增 `coordination.py`：
-- **注册表** `data/coordination.json`（本机所有 DeverAI 进程共享 DATA_DIR）：agents（workspace/pid/status/task/resources/next_action/last_seen）+ inbox（逐 Agent 收件箱）；心跳 TTL（轮开始/工具调用节流刷新，超时 180s 自动回收，GUI 关闭自然过期；v8.34：轮开始的纯心跳也按节流窗口落盘、回收结果回写注册表——此前两者只改内存，看板看不到"未声明资源"的 Agent，且 coordination.json 只增不减）。
-- **冲突检测**：两个存活 Agent 声明同一归一化资源键（如 `ssh:host`；run_command 自动嗅探 ssh/scp/rsync/sshpass/plink 主机，AI 也可 `coordination_declare` 显式声明任务/资源/下一步）→ 双向投递协议消息（你在干什么/我要干什么/下一步是什么）。
+- **注册表** `data/coordination.json`（本机所有 DeverAI 进程共享 DATA_DIR）：agents（workspace/pid/status/task/resources/next_action/last_seen）+ inbox（逐 Agent 收件箱）；心跳 TTL（轮开始/工具调用节流刷新，超时 180s 自动回收，GUI 关闭自然过期；v8.34：轮开始的纯心跳也按节流窗口落盘、回收结果回写注册表——此前两者只改内存，看板看不到"未声明资源"的 Agent，且 coordination.json 只增不减）。v8.35（用户裁决「每个专家的情况要汇总到看板」）：专家/子Agent 的 uid 追加身份后缀（agent_uid = 工作区名@pid/子标签），逐专家单独成行、各自收件箱；task 字段语义=「准备做什么事情」，run_command 嗅探只登记资源、不再用原始命令覆盖 next_action。
+- **冲突检测**：两个存活 Agent 声明同一归一化资源键（如 `ssh:host`；run_command 自动嗅探 ssh/scp/rsync/sshpass/plink 主机，AI 也可 `coordination_declare` 显式声明任务/资源/下一步）→ 双向投递协议消息（你在干什么/我要干什么/下一步是什么）。v8.35（用户裁决「包要发消息的」）：检测到冲突时同步给人类发可见消息——新事件类型 coordination，gui（chat 气泡）/CLI（黄字）/专家经 sub_event 包装三条渲染分支同源；同一 run 内同一组冲突键只报一次。
 - **AI 协议工具**：`coordination_board`（只读看板）/ `coordination_declare`（声明并即时返回冲突+收件箱）；轮开始把收件箱+冲突快照注入 system prompt（协调顺序：等待/错峰/经用户确认）。
 - **人类看板**：桌面「协调看板」**非模态**对话框（菜单栏「工作区 → 全局协调看板…」+ 命令面板 Ctrl+Shift+P 双入口；表格 + 5s 自动刷新 + 冲突行高亮 + Agent 列 tooltip 显示完整工作区路径；关闭即销毁、单实例复用。v8.34 由模态 exec 改非模态 show——监控面板不能挡住本窗口的「停止」按钮）+ webui 设置「安全中心 → 全局协调看板」（v8.34 补：此前网页端只有 AI 工具能读，人类看不到，与"信息人类也要能看到"的裁决不符）+ 只读端点 `GET /api/bridge/coordination`。叫停方式=按工作区路径切到对应窗口点「停止」（看板本身不跨进程发指令）。
 - 开关 `ENABLE_COORDINATION`（默认开，三层贯通）。
+
+### 6.19 摄像头交互与 Agent+ 预设入口（v8.36）
+
+145. **摄像头交互（v8.36，用户裁决「允许打开摄像头交互——硬件短接烧录时用户腾不出手，要么说话要么摄像头看到短接就开始跑」）**：挂在悬浮助手「小龙」（voice-pet.js，浏览器侧零依赖 getUserMedia）。隐私边界：流仅在用户点「看」后建立；**帧只在用户点「看」按钮或说「看一下」时抓取一张**（canvas 缩到 768 宽 JPEG q0.7）；关闭面板即断开流。链路：抓帧 dataURL → 多模态消息经既有 `/api/llm/chat` 代理（content 数组本就被代理允许）→ 视觉判定「条件就绪，可以执行」→ 自动走既有 decideAndProcess 决策链（可进 agent_loop 用 run_command 等工具真正开始烧录）。语音/文本意图 `look`（看一下/看一眼/拍照/开摄像头）。需视觉模型；页面须 HTTPS/localhost。不做常驻监控、不做服务端存储。
+146. **Agent+ 模式预设 GUI 入口（v8.36）**：决策 143 此前仅 CLI `--preset`——补设置 General「模块开关」页的「Agent+ 预设」下拉+应用按钮（同一 AGENT_PRESETS 源，就地改 cfg、刷新受影响勾选，取消由 _cfg_backup 回滚）。
 
 ---
 
