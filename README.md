@@ -1,127 +1,128 @@
-# DeverAI — 「UI 即 Agent 运行地」AI 开发工作台
+<div align="center">
 
-AI Agent 直接运行在本机进程内（桌面版为 PyQt6 进程、网页版为浏览器 JS），通过 OpenAI 兼容接口直连大模型，无需浏览器权限桥接即可操作工作区内的真实文件与真实命令行。
+# DeverAI
 
-**核心理念**：本地记忆即资产，复用优先于重建；UI 即 Agent 运行地。
+**鏈湴浼樺厛鐨?AI 宸ヤ綔鍙?路 鏁欒偛宸ュ叿 路 娓告垙涓庣爺绌跺疄楠屽満**
 
-## 核心特点
+鎶?Agent 瑁呰繘鏈満杩涚▼锛屾妸鐪熷疄鏂囦欢涓庣湡瀹炲懡浠よ浜ゅ洖缁欎綘銆?
+[鏃楄埌浜у搧 DeverAI](./DeverAI) 路 [椤圭洰鍦板浘](#-椤圭洰鍦板浘) 路 [蹇€熼€夊瀷](#-蹇€熼€夊瀷) 路 [鎶€鏈爤](#-鎶€鏈爤)
 
-| 特点 | 说明 |
+</div>
+
+---
+
+## 鎴戝湪鍋氫粈涔?
+杩欓噷涓嶆槸銆屽張涓€涓亰澶╁３銆嶃€侱everAI 浣撶郴鍥寸粫涓夋潯涓荤嚎灞曞紑锛?
+| 涓荤嚎 | 鏍稿績涓诲紶 | 浠ｈ〃浠撳簱 |
+|------|----------|----------|
+| **AI 宸ヤ綔鍙?* | UI 鍗?Agent 杩愯鍦帮紱鏈湴璁板繂鍗宠祫浜э紱绠楀姏鍙紓绉汇€佺姸鎬佸彲鍐峰 | `DeverAI` 路 `DeverAI-Hub` |
+| **鏁欒偛涓庡涔?* | 鑷嫑/涓€?OI/涓撴敞鍔涳紝宸ュ叿浼樺厛銆佸彲鏈湴杩愯 | `learning-agent` 路 `zizhao-learning` 路 `OISystem` 路 `OpenIME` |
+| **妯℃嫙涓庡疄楠?* | 鐢ㄥ彲鐜╃殑绯荤粺鐞嗚В澶嶆潅鐜板疄锛堢彮涓讳换銆佸崥澹€佹垬鏈琛岋級 | `homeroom-simulator` 路 `paper-writing-simulator` 路 `tactical-simulation` |
+
+---
+
+## 椤圭洰鍦板浘
+
+> 鍏?25 涓粨搴擄紙22 鍏紑 / 3 绉佹湁锛夈€傛寜鐢ㄩ€旀祻瑙堬紝涓嶅繀鎸夊悕瀛楃寽銆?
+### 0 路 鏃楄埌 路 AI 宸ヤ綔鍙?
+| 浠撳簱 | 涓€鍙ヨ瘽 | 鐘舵€?|
+|------|--------|------|
+| **[DeverAI](https://github.com/DeverAI/DeverAI)** | 妗岄潰/缃戦〉/CLI/Lite 鍥涚 AI Agent 宸ヤ綔鍙般€傛枃浠跺垎鍖哄苟鍙戙€佷笓瀹跺洟 DAG銆佺畻鍔涙紓绉汇€乄orkTree 涓夊眰澶囦唤銆佸鍙戝鏍?| 涓讳骇鍝?|
+| **[DeverAI-Hub](https://github.com/DeverAI/DeverAI-Hub)** | 涓汉涓婚〉銆佹彃浠朵笌鍖呭垎鍙戞灑绾斤紙鍚?model-router銆丆ordis 鎻掍欢锛?| 鏋㈢航 |
+| **[dsh-harness-fork](https://github.com/DeverAI/dsh-harness-fork)** | DSH harness 鍒嗘敮锛屾帴鍏?DeverAI 璺敱璁捐 | 鍩虹璁炬柦 |
+
+<details>
+<summary>DeverAI 鑳藉姏閫熻</summary>
+
+- **鍏叆鍙?*锛歅yQt 妗岄潰 / 瀹屾暣缃戦〉 / Lite 杩滄帶 / CLI / 鍚屾鏈嶅姟鍣?/ Cordis 鎻掍欢
+- **鎬诲徃浠よ皟搴?*锛氫笓瀹跺洟 DAG 鍒嗗眰骞惰锛涙枃浠跺垎鍖鸿皟搴﹀櫒锛堝啓涓嶅悓鏂囦欢骞惰銆佸啓鍚屾枃浠朵覆琛岋級
+- **绠楀姏婕傜Щ**锛氬伐浣滅姸鎬佸懆鏈熸帹閫佽嚜鏈夋湇鍔″櫒锛涘喎澶?Agent 缁亰锛涘紑鏈鸿嚜鍔ㄥ悎骞跺幓閲?- **WorkTree 澶囦唤瀹℃牳**锛氭枃浠剁骇蹇収 + 浠诲姟绾т細璇濆揩鐓?+ 渚濊禆鏍戞牎楠?+ 瀹¤鏃ュ織
+- **瀹夊叏绾㈢嚎**锛氬伐浣滃尯 `resolve()` 闃茶秺鐣屻€佸嵄闄╁懡浠ゅ洓绔悓婧愩€佸鍙戦€愬瓧澶嶈堪 + 瀹℃牳鍗°€丼SRF 闃叉姢浠ｇ悊
+
+</details>
+
+### 1 路 鏁欒偛 路 瀛︿範绯荤粺
+
+| 浠撳簱 | 涓€鍙ヨ瘽 | 褰㈡€?|
+|------|--------|------|
+| **[learning-agent](https://github.com/DeverAI/learning-agent)** | 棰樺簱 / OCR / AI 鎵规敼 / 涓撴敞妯″紡锛團astAPI + Web锛?| 鏈嶅姟 |
+| **[learning-agent-v2](https://github.com/DeverAI/learning-agent-v2)** | v2锛欰ndroid 瀹㈡埛绔€佽鍫傜壒鎬с€佸紑鍙戞棩蹇?| 鏈嶅姟+绔?|
+| **[zizhao-learning](https://github.com/DeverAI/zizhao-learning)** | 涓婃捣涓€冭嚜鎷涙瘡鏃ョ礌鏉愶細鍝插/鍘嗗彶/鍙よ瘲鏂?+ 鎵捐尙杩介棶 | 鏈嶅姟 |
+| **[OISystem](https://github.com/DeverAI/OISystem)** | 淇℃伅瀛﹀ゥ璧涙闈笓娉ㄧ郴缁燂細AI 寮曞銆佸睆骞曞垎鏋愩€乑ZOI 闆嗘垚銆佸浘璁虹紪杈戝櫒 | 妗岄潰 |
+| **[focus-tools](https://github.com/DeverAI/focus-tools)** | FocusTools / OISystem v1.0.0 鍙戝竷鍖?| 鍙戝竷 |
+| **[OpenIME](https://github.com/DeverAI/OpenIME)** | 寰蒋鎷奸煶鐢ㄦ埛璇嶅簱绠″锛氬瀭鍩熸湳璇鍏ワ紙鏁欐潗/绔炶禌/榛戣瘽锛?| 妗岄潰 |
+| **[zhongkao-widget](https://github.com/DeverAI/zhongkao-widget)** | 涓€冨€掕鏃舵闈㈠皬缁勪欢锛堝湪鏍＄姸鎬?妯¤€?鍐滃巻/璇剧▼锛?| 妗岄潰 |
+| **[study-workbench](https://github.com/DeverAI/study-workbench)** | 涓汉瀛︿範宸ヤ綔鍙板悗绔笌閮ㄧ讲 | 鏈嶅姟 |
+
+### 2 路 娓告垙 路 妯℃嫙鍣?
+| 浠撳簱 | 涓€鍙ヨ瘽 | 鐜╂硶鍐呮牳 |
+|------|--------|----------|
+| **[homeroom-simulator](https://github.com/DeverAI/homeroom-simulator)** | 鐝富浠绘ā鎷熷櫒锛氫俊鎭糠闆?+ 瀹堕暱缇?+ 浼犻椈閾?+ LLM 瀵硅瘽 | 绠＄悊/鍙欎簨 |
+| **[homeroom-simulator-flask](https://github.com/DeverAI/homeroom-simulator-flask)** | 鍚屼富棰?Flask 鍚庣 + 闈欐€佸墠绔増 | 绠＄悊/鍙欎簨 |
+| **[paper-writing-simulator](https://github.com/DeverAI/paper-writing-simulator)** | 涔濇涓€鐢燂細鍗氬＋姣曚笟妯℃嫙鍣紙寮€棰樷啋鐩插鈫掔瓟杈╋紝鍏勾娓呴€€锛?| 鍛ㄥ洖鍚堢敓瀛?|
+| **[battlian](https://github.com/DeverAI/battlian)** | 绛栫暐瀵规垬锛歅ython + Web 鍙岀増鏈紝AI 鎸囨尌瀹?| 绛栫暐瀵规垬 |
+| **[tactical-simulation](https://github.com/DeverAI/tactical-simulation)** | FALCON-SIM 鎴樻湳椋炶锛氳捣椋?鎶曞脊/韬查伩/鎷︽埅绛変竷浠诲姟 | 椋炶妯℃嫙 |
+
+### 3 路 妗岄潰宸ュ叿 路 鏁堢巼
+
+| 浠撳簱 | 涓€鍙ヨ瘽 |
+|------|--------|
+| **[DeepTrans](https://github.com/DeverAI/DeepTrans)** | 鍒掕瘝缈昏瘧锛氫换鎰忓簲鐢ㄩ€変腑鏂囨湰 鈫?鎮诞绐楋紱灏忕背 MiMo / DeepSeek 鍙屽紩鎿?+ 鏈虹炕鍏滃簳 |
+| **[AIrater](https://github.com/DeverAI/AIrater)** | 澶фā鍨嬩骇鍝佽瘎娴嬶細澶?API銆佽仈缃戞悳绱€佽嚜鍔ㄧ籂鍋忋€佸彲瑙嗗寲鍒嗘瀽 |
+
+### 4 路 鐮旂┒ 路 瀹夊叏 路 鍒涗綔
+
+| 浠撳簱 | 涓€鍙ヨ瘽 |
+|------|--------|
+| **[retrace](https://github.com/DeverAI/retrace)** | ReTrace锛歐indows 婕忔礊鏌ユ壘鍒嗘瀽鍙嶅悜宸ュ叿锛堟姄鍖?娉ㄥ唽琛?鍙嶇紪璇?MV3/LLM 瀹¤锛?|
+| **[qinglian-platform](https://github.com/DeverAI/qinglian-platform)** | 闈掑皯骞翠簰鑱旂綉骞冲彴鍚堣鐩戞祴锛氫妇鎶?鈫?瀹℃牳 鈫?妗堜緥 / 璁哄潧 / 娉曞緥鐭ヨ瘑搴?|
+| **[airender](https://github.com/DeverAI/airender)** | AI 寤烘ā椹卞姩 3D 瑙嗛娓叉煋娴佹按绾匡紙鍏樁娈碉紝鍙€夋湰鍦版墿鏁ｏ級 |
+| **[dba-attention-genetic](https://github.com/DeverAI/dba-attention-genetic)** | 娉ㄦ剰鍔涢仐浼犵爺绌讹細Difference-Based Attention 鎷熷悎瀹為獙 |
+
+### 5 路 鍐呴儴浠撳簱锛堢鏈夛級
+
+| 浠撳簱 | 鐢ㄩ€?|
 |------|------|
-| 算力漂移 | 工作期间按周期推送完整工作状态（含冷备副本）到用户自有服务器；退出默认自动漂移；服务器冷备 Agent 续聊（HTML 状态页手机可用）；本机开机自动拉取合并云端产出并去重 |
-| 总司令调度文件分区并发 | 专家团 DAG 分层并行；文件分区调度器按申报文件冲突自动分批——写不同文件并行、写同一文件串行；租约锁 + CoW 原子替换 |
-| WorkTree 独立安全备份审核 | 三层防线：文件级版本快照、任务级会话快照、依赖树校验；回退审核日志 `data/audit.jsonl` 供 AI 自查 |
-| 自动化设计·搜索·工具池 | 工具设计专家、自研工具库 + 工具医生、资产银行资料检修、互联网搜索、三级文件匹配、CDP 浏览器直接操控、外部 exe 自动化 |
-| 记忆·出关·外部 API 治理 | Agent 跨会话长期记忆（教训沉淀 + 自动召回）；外发内容前逐字复述要求 + 审核卡批准；外部 API 清单 + SSRF 防护代理 + 心跳泄露检查 |
+| `toolkit` | 缁樺浘 / 寤烘ā鑴氭湰涓庣鍙ｆ敞鍐岃〃 |
+| `mindog` | MindDog K210 鍥涜冻鏁欒偛鏈哄櫒浜猴紙鍥轰欢 / 浜戠鑴?/ App锛?|
+| `qoder-src-research` | Qoder SRC 鍙栬瘉鐮旂┒绗旇涓庤ˉ涓佽瘉鎹?|
 
-> 本文档为首要入口文档。架构与设计决策见 `Design.md`；实现方法见 `Techniques.md`；用户偏好裁决见 `Fact.md`；常见错误见 `FreqErr.md`；版本演进见 `dev_log/`。
+---
 
-## 环境要求
+## 蹇€熼€夊瀷
 
-- Python 3.12+（本仓库开发环境为 3.12.10 + PyQt6 6.11，无 PyQt5）
-- 网页版运行时需可访问公共 CDN（jsdelivr 等，加载 marked/dompurify/highlight.js/monaco-editor）；Lite 版与同步服务器零 CDN 依赖
-- 一个 OpenAI 兼容的大模型 API（DeepSeek / Kimi / 智谱 / Ollama / OpenAI 均可）
+| 浣犳兂鈥?| 鍘昏繖閲?|
+|-------|--------|
+| 璺戜竴涓湰鍦?AI Agent锛屾搷浣滅湡瀹炴枃浠?| [`DeverAI`](https://github.com/DeverAI/DeverAI) |
+| 涓婃捣涓€冭嚜鎷涙瘡鏃ョ礌鏉?+ 杩介棶 | [`zizhao-learning`](https://github.com/DeverAI/zizhao-learning) |
+| OI 涓撴敞瀛︿範 / 瀵规帴 ZZOI | [`OISystem`](https://github.com/DeverAI/OISystem) |
+| 鎶婅涔夋湳璇杩涘井杞嫾闊?| [`OpenIME`](https://github.com/DeverAI/OpenIME) |
+| 鍒掕瘝缈昏瘧妗岄潰宸ュ叿 | [`DeepTrans`](https://github.com/DeverAI/DeepTrans) |
+| 浣撻獙銆岀彮涓讳换 / 鍗氬＋銆嶇敓瀛樺帇鍔?| [`homeroom-simulator`](https://github.com/DeverAI/homeroom-simulator) 路 [`paper-writing-simulator`](https://github.com/DeverAI/paper-writing-simulator) |
+| Windows 閫嗗悜涓庢紡娲炶瀵?| [`retrace`](https://github.com/DeverAI/retrace) |
+| 璇勬祴澶氬澶фā鍨嬩骇鍝?| [`AIrater`](https://github.com/DeverAI/AIrater) |
 
-## 安装
+---
 
-```bash
-pip install -r requirements.txt
-# 或手动：
-# pip install PyQt6 fastapi uvicorn httpx
-# pip install cryptography   # 可选：快照加密导出（Fernet/AES-GCM）需要
+## 鎶€鏈爤
 
-# API Key 配置（二选一，不落盘到 git）：
-# 1) 环境变量：DEVERAI_API_KEY / DEVERAI_SEARCH_KEY / DEVERAI_DRIFT_KEY / DEVERAI_DASHSCOPE_KEY
-# 2) 本地文件：复制 api.txt.example 为 api.txt 后填入（已加入 .gitignore）
-```
+- **涓昏瑷€**锛歅ython锛圥yQt6 / FastAPI / PySide6锛壜?JavaScript / TypeScript
+- **褰㈡€?*锛氭闈?GUI 路 闆舵瀯寤洪潤鎬佸墠绔?路 CLI 路 鏈湴鏈嶅姟 路 Cordis 鎻掍欢 路 Chrome MV3
+- **椋庢牸鍋忓ソ**锛歴tdlib-first銆佹湰鍦颁紭鍏堛€佸皯渚濊禆銆佸彲鎵撳寘銆佸彲绂荤嚎
+- **LLM 鎺ュ叆**锛歄penAI 鍏煎锛圖eepSeek / Kimi / 鏅鸿氨 / 灏忕背 MiMo / Ollama 绛夛級
 
-无构建步骤：网页版前端为零构建静态文件，克隆即用。首次运行会在 `data/` 下生成默认配置（幂等，不影响 git）。
+---
 
-## 启动（六入口）
+## 缁存姢绾﹀畾锛堣法浠撳叡鎬э級
 
-| 入口 | 命令 | 默认地址 |
-|------|------|----------|
-| 桌面版（主形态，功能最全） | `python pyqt/main.py` | 本机 GUI |
-| 完整网页版 | `python webui/web_main.py` | http://127.0.0.1:8765（`--port` / `--no-browser` / `--reload`） |
-| 超轻量远控 Lite | `python lite/lite_main.py` | http://127.0.0.1:8733（零 CDN 单文件前端） |
-| 命令行 CLI | `python pyqt/cli_main.py` | 交互式 Agent（`--model/--workspace/--mode/--no-color`） |
-| 同步服务器 | `python sync_server.py` | 0.0.0.0:8765（部署在用户自有服务器；`--host/--port`） |
-| DSH 插件版 | Cordis 静态插件 `@deverai/hub` | http://127.0.0.1:3080 |
+1. **瀵嗛挜涓嶈繘 git**锛氱幆澧冨彉閲忔垨鏈湴 `api.txt` / `config.json`锛堝凡 gitignore锛夈€?2. **璁捐/鎶€鏈枃妗ｅ垎浠?*锛歚Design.md` / `Techniques.md` / `Fact.md` / `FreqErr.md` 鏄爣閰嶃€?3. **鍗遍櫓鎿嶄綔鍙璁?*锛氬懡浠ょ‘璁ゃ€佹枃浠跺揩鐓с€佸璁℃棩蹇楀敖閲忎笁浠跺榻愩€?4. **UI 涓嶅爢 emoji**锛氱粺涓€ SVG 鍥炬爣鎴?`[OK]` / `[X]` / `[!]` 鏂囨湰鏍囪銆?
+---
 
-首次使用：启动桌面版或网页版后，在设置中填入 API base_url / api_key / 模型名。API Key 仅存本机 `data/config.json`（网页版仅存浏览器 localStorage）。
+## License
 
-### 同步服务器（算力漂移）
+鍚勪粨搴撶嫭绔嬫巿鏉冿紝浠ユ牴鐩綍 `LICENSE` 涓哄噯锛堝父瑙佷负 AGPL-3.0 / GPL-3.0锛夈€傜綉缁滄彁渚涙湇鍔′笖淇敼鏈」鐩椂锛岃閬靛畧瀵瑰簲 copyleft 鏉℃銆?
+<div align="center">
 
-部署在用户自有服务器，提供快照存取（`/push`、`/pull`）、冷备 Agent 续聊（`/chat`）、漂移状态（`/drift/*`）、远程指挥（`/cmd/*`）与 HTML 状态页（`/`、`/chat/page`）。
+<sub>DeverAI 路 Local-first AI workbench & experiment field 路 鏈€鍚庢暣鐞嗕簬 2026-09</sub>
 
-```bash
-# 环境变量
-SYNC_TOKEN=...            # 远程鉴权令牌（客户端设置中填同一令牌）；未设置时仅环回可访问
-DRIFT_API_BASE=...        # 冷备 Agent 直连 LLM（OpenAI 兼容 base_url）
-DRIFT_API_KEY=...
-DRIFT_ALLOW_LOOPBACK=1    # 允许 LLM 指向环回地址（本地 LLM 时需要）
-SYNC_DATA_DIR=./sync_data # 数据目录（snapshots.json / cold.json / drift_state.json）
-
-python sync_server.py --host 0.0.0.0 --port 8765
-```
-
-> 完整网页版与 sync_server 默认端口同为 8765；同一台机器同时运行需错开端口。
-
-## 测试
-
-```bash
-python _audit_tmp.py            # 一键回归：gui + server 两套测试
-python _audit_tmp.py server      # 仅双服务端冒烟（lite + webui + sync_server）
-python -m pytest tests/ -v       # 桌面离屏回归 + 服务端冒烟
-```
-
-## 目录结构
-
-```
-DeverAI/
-├── pyqt/            # 桌面版（主形态）
-│   ├── main.py      #   桌面入口
-│   ├── cli_main.py  #   CLI 入口
-│   └── desktop/     #   Agent 核心/工具/专家团/快照/漂移/自动化等全部模块
-├── webui/           # 完整网页版
-│   ├── web_main.py  #   入口（FastAPI + uvicorn）
-│   ├── app/         #   后端：鉴权/LLM 代理/本地资源桥
-│   └── static/      #   零构建前端（Agent 循环在浏览器 JS 执行）
-├── lite/            # 超轻量远控版（自包含，零 CDN）
-├── sync_server.py   # 同步服务器（快照存取/冷备续聊/漂移状态/远程指挥）
-├── tests/           # 桌面离屏回归 + 双服务端冒烟
-├── data/            # 本机持久化（配置/历史/资产/快照/审计；含密钥，勿外传）
-├── backups/         # 阶段性备份（时间命名，只读参考）
-├── dev_log/         # 版本更新文档（按日期命名）
-├── Design.md        # 架构与设计决策（当前状态）
-├── Techniques.md    # 技术方案
-├── Fact.md          # 用户偏好约束与冲突裁决
-└── FreqErr.md       # 常见错误类型
-```
-
-## 安全红线（摘要）
-
-- API Key 仅存本机；快照/导出不含明文密钥（六字段穷举排除）。
-- 文件操作限制在工作区内（`resolve()` 防 `../` 越界）；系统目录与 `config.json`、`Err.log` 受保护；AI 删除默认禁止。
-- 危险命令四端同源 + `danger_ok` 严格确认；命令桥对未确认的危险命令直接 403。
-- 网页版 `--host 0.0.0.0` 会暴露本地资源桥，仅限可信网络；sync_server 未设 `SYNC_TOKEN` 时仅环回可访问，非环回部署必须设置令牌。
-- AI 只见工作区文件大代号（codename），绝对路径由系统层翻译；Cookie 维持 HttpOnly。
-- 外部 API 调用统一走 `/api/llm/ext_proxy`（SSRF 防护）；AI 不能直发邮件，仅存草稿由用户手动触发。
-
-## 常见问题
-
-- **网页版 JS 行为异常/缺新功能**：浏览器缓存了旧 JS，强制刷新（Ctrl+F5）；版本号以 `index.html` 的 `?v=` 为准。
-- **8765 端口冲突**：完整网页版与同步服务器默认端口相同，给其中一个 `--port` 错开。
-- **快照导入报「请先安装 cryptography」**：加密快照需要 `pip install cryptography`。
-- **sync_server 返回 403**：非环回访问且未设置 `SYNC_TOKEN`；设置后客户端在设置中填同一令牌。
-- **Lite 与完整版差异**：Lite 刻意精简（写上限 5MB、无快照桥/邮箱注册/项目下载、文件树无 modified），详见 `Design.md` §2.3。
-- **运行错误排查**：统一读根目录 `Err.log`（5MB 轮转）。
-
-## 维护纪律（贡献者必读）
-
-- 任何功能开关必须三层贯通：`config.py` 字段 → `tools.build_tool_defs` 暴露 → 设置面板展示。
-- 凡改 `webui/static/js/` 或 CSS，必须同步 bump `index.html` 对应 `?v=`。
-- 危险正则四端同源：`pyqt/tools.py` / `webui/app/security.py` / `lite/app/security.py` / `webui/static/js/tools.js` / `lite/static/lite.html`。
-- 全部 UI 禁止 emoji，统一 SVG 图标或 `[OK]`/`[X]`/`[!]` 文本标记。
-- 收口验证必须跑在最后一次编辑之后：`python _audit_tmp.py` + 全量 `py_compile` + `node --check`。
-- 关键更新备份至 `backups/YYYYMMDD_vXYZ/`，维护文档写 `dev_log/YYYYMMDD_vXYZ.md`。
+</div>
